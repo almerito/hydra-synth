@@ -9,7 +9,7 @@ import ArrayUtils from './lib/array-utils.js'
 // import strudel from './lib/strudel.js'
 import Sandbox from './eval-sandbox.js'
 import Generator from './generator-factory.js'
-import regl from 'regl'
+import { createEngine, ReglEngine, WebGL2Engine } from './engines/index.js'
 // const window = global.window
 
 
@@ -18,7 +18,7 @@ const Mouse = MouseTools()
 // to do: add ability to pass in certain uniforms and transforms
 class HydraRenderer {
 
-  constructor ({
+  constructor({
     pb = null,
     width = 1280,
     height = 720,
@@ -30,6 +30,7 @@ class HydraRenderer {
     enableStreamCapture = true,
     canvas,
     precision,
+    engine = 'glsl1', // 'glsl1' | 'glsl3' | 'webgl1' | 'webgl2' | ReglEngine | WebGL2Engine | custom engine class
     extendTransforms = {} // add your own functions on init
   } = {}) {
 
@@ -59,8 +60,8 @@ class HydraRenderer {
       mouse: Mouse,
       render: this._render.bind(this),
       setResolution: this.setResolution.bind(this),
-      update: (dt) => {},// user defined update function
-      afterUpdate: (dt) => {},// user defined function run after update
+      update: (dt) => { },// user defined update function
+      afterUpdate: (dt) => { },// user defined function run after update
       hush: this.hush.bind(this),
       tick: this.tick.bind(this)
     }
@@ -72,8 +73,8 @@ class HydraRenderer {
     this._time = 0 // for internal use, only to use for deciding when to render frames
 
     // only allow valid precision options
-    let precisionOptions = ['lowp','mediump','highp']
-    if(precision && precisionOptions.includes(precision.toLowerCase())) {
+    let precisionOptions = ['lowp', 'mediump', 'highp']
+    if (precision && precisionOptions.includes(precision.toLowerCase())) {
       this.precision = precision.toLowerCase()
       //
       // if(!precisionValid){
@@ -81,15 +82,16 @@ class HydraRenderer {
       // }
     } else {
       let isIOS =
-    (/iPad|iPhone|iPod/.test(navigator.platform) ||
-      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) &&
-    !window.MSStream;
+        (/iPad|iPhone|iPod/.test(navigator.platform) ||
+          (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) &&
+        !window.MSStream;
       this.precision = isIOS ? 'highp' : 'mediump'
     }
 
 
 
     this.extendTransforms = extendTransforms
+    this.engineOption = engine // Store the engine option
 
     // boolean to store when to save screenshot
     this.saveFrame = false
@@ -99,7 +101,7 @@ class HydraRenderer {
 
     this.generator = undefined
 
-    this._initRegl()
+    this._initEngine()
     this._initOutputs(numOutputs)
     this._initSources(numSources)
     this._generateGlslTransforms()
@@ -119,9 +121,9 @@ class HydraRenderer {
       }
     }
 
-    if(detectAudio) this._initAudio()
+    if (detectAudio) this._initAudio()
 
-    if(autoLoop) loop(this.tick.bind(this)).start()
+    if (autoLoop) loop(this.tick.bind(this)).start()
 
     // final argument is properties that the user can set, all others are treated as read-only
     this.sandbox = new Sandbox(this.synth, makeGlobal, ['speed', 'update', 'afterUpdate', 'bpm', 'fps'])
@@ -145,47 +147,49 @@ class HydraRenderer {
     })
     this.synth.render(this.o[0])
     // this.synth.update = (dt) => {}
-    this.sandbox.set('update', (dt) => {})
-    this.sandbox.set('afterUpdate', (dt) => {})
+    this.sandbox.set('update', (dt) => { })
+    this.sandbox.set('afterUpdate', (dt) => { })
   }
 
   loadScript(url = "") {
-   const p = new Promise((res, rej) => {
-     var script = document.createElement("script");
-     script.onload = function () {
-       console.log(`loaded script ${url}`);
-       res();
-     };
-     script.onerror = (err) => {
-       console.log(`error loading script ${url}`, "log-error");
-       res()
-     };
-     script.src = url;
-     document.head.appendChild(script);
-   });
-   return p;
- }
+    const p = new Promise((res, rej) => {
+      var script = document.createElement("script");
+      script.onload = function () {
+        console.log(`loaded script ${url}`);
+        res();
+      };
+      script.onerror = (err) => {
+        console.log(`error loading script ${url}`, "log-error");
+        res()
+      };
+      script.src = url;
+      document.head.appendChild(script);
+    });
+    return p;
+  }
 
   setResolution(width, height) {
-  //  console.log(width, height)
     this.canvas.width = width
     this.canvas.height = height
-    this.width = width // is this necessary?
-    this.height = height // ?
+    this.width = width
+    this.height = height
     this.sandbox.set('width', width)
     this.sandbox.set('height', height)
-    console.log(this.width)
     this.o.forEach((output) => {
       output.resize(width, height)
     })
     this.s.forEach((source) => {
       source.resize(width, height)
     })
-    this.regl._refresh()
-     console.log(this.canvas.width)
+    // Use engine refresh if available, fallback to regl._refresh for backward compat
+    if (this.engine && this.engine.refresh) {
+      this.engine.refresh()
+    } else if (this.regl) {
+      this.regl._refresh()
+    }
   }
 
-  canvasToImage (callback) {
+  canvasToImage(callback) {
     const a = document.createElement('a')
     a.style.display = 'none'
 
@@ -193,15 +197,15 @@ class HydraRenderer {
     a.download = `hydra-${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}-${d.getHours()}.${d.getMinutes()}.${d.getSeconds()}.png`
     document.body.appendChild(a)
     var self = this
-    this.canvas.toBlob( (blob) => {
-        if(self.imageCallback){
-          self.imageCallback(blob)
-          delete self.imageCallback
-        } else {
-          a.href = URL.createObjectURL(blob)
-          console.log(a.href)
-          a.click()
-        }
+    this.canvas.toBlob((blob) => {
+      if (self.imageCallback) {
+        self.imageCallback(blob)
+        delete self.imageCallback
+      } else {
+        a.href = URL.createObjectURL(blob)
+        console.log(a.href)
+        a.click()
+      }
     }, 'image/png')
     setTimeout(() => {
       document.body.removeChild(a);
@@ -209,7 +213,7 @@ class HydraRenderer {
     }, 300);
   }
 
-  _initAudio () {
+  _initAudio() {
     const that = this
     this.synth.a = new Audio({
       numBins: 4,
@@ -230,7 +234,7 @@ class HydraRenderer {
   }
 
   // create main output canvas and add to screen
-  _initCanvas (canvas) {
+  _initCanvas(canvas) {
     if (canvas) {
       this.canvas = canvas
       this.width = canvas.width
@@ -246,64 +250,30 @@ class HydraRenderer {
     }
   }
 
-  _initRegl () {
-    this.regl = regl({
-    //  profile: true,
+  _initEngine() {
+    // Create engine instance from string identifier, class, or instance
+    this.engine = createEngine(this.engineOption, {
       canvas: this.canvas,
-      pixelRatio: 1//,
-      // extensions: [
-      //   'oes_texture_half_float',
-      //   'oes_texture_half_float_linear'
-      // ],
-      // optionalExtensions: [
-      //   'oes_texture_float',
-      //   'oes_texture_float_linear'
-     //]
-   })
-
-    // This clears the color buffer to black and the depth buffer to 1
-    this.regl.clear({
-      color: [0, 0, 0, 1]
+      width: this.width,
+      height: this.height,
+      precision: this.precision
     })
 
-    this.renderAll = this.regl({
-      frag: `
-      precision ${this.precision} float;
-      varying vec2 uv;
-      uniform sampler2D tex0;
-      uniform sampler2D tex1;
-      uniform sampler2D tex2;
-      uniform sampler2D tex3;
+    // Initialize the engine
+    this.engine.init()
 
-      void main () {
-        vec2 st = vec2(1.0 - uv.x, uv.y);
-        st*= vec2(2);
-        vec2 q = floor(st).xy*(vec2(2.0, 1.0));
-        int quad = int(q.x) + int(q.y);
-        st.x += step(1., mod(st.y,2.0));
-        st.y += step(1., mod(st.x,2.0));
-        st = fract(st);
-        if(quad==0){
-          gl_FragColor = texture2D(tex0, st);
-        } else if(quad==1){
-          gl_FragColor = texture2D(tex1, st);
-        } else if (quad==2){
-          gl_FragColor = texture2D(tex2, st);
-        } else {
-          gl_FragColor = texture2D(tex3, st);
-        }
+    // For backward compatibility, expose regl if using ReglEngine
+    if (this.engine.regl) {
+      this.regl = this.engine.regl
+    }
 
-      }
-      `,
-      vert: `
-      precision ${this.precision} float;
-      attribute vec2 position;
-      varying vec2 uv;
+    // Store shader language info
+    this.shaderLanguage = this.engine.getShaderLanguage()
 
-      void main () {
-        uv = position;
-        gl_Position = vec4(1.0 - 2.0 * position, 0, 1);
-      }`,
+    // Create render commands using the engine
+    this.renderAll = this.engine.createDrawCommand({
+      frag: this.engine.getRenderAllShader(),
+      vert: this.engine.getDefaultVertexShader(),
       attributes: {
         position: [
           [-2, 0],
@@ -312,35 +282,18 @@ class HydraRenderer {
         ]
       },
       uniforms: {
-        tex0: this.regl.prop('tex0'),
-        tex1: this.regl.prop('tex1'),
-        tex2: this.regl.prop('tex2'),
-        tex3: this.regl.prop('tex3')
+        tex0: this.engine.prop('tex0'),
+        tex1: this.engine.prop('tex1'),
+        tex2: this.engine.prop('tex2'),
+        tex3: this.engine.prop('tex3')
       },
       count: 3,
       depth: { enable: false }
     })
 
-    this.renderFbo = this.regl({
-      frag: `
-      precision ${this.precision} float;
-      varying vec2 uv;
-      uniform vec2 resolution;
-      uniform sampler2D tex0;
-
-      void main () {
-        gl_FragColor = texture2D(tex0, vec2(1.0 - uv.x, uv.y));
-      }
-      `,
-      vert: `
-      precision ${this.precision} float;
-      attribute vec2 position;
-      varying vec2 uv;
-
-      void main () {
-        uv = position;
-        gl_Position = vec4(1.0 - 2.0 * position, 0, 1);
-      }`,
+    this.renderFbo = this.engine.createDrawCommand({
+      frag: this.engine.getRenderFboShader(),
+      vert: this.engine.getDefaultVertexShader(),
       attributes: {
         position: [
           [-2, 0],
@@ -349,27 +302,27 @@ class HydraRenderer {
         ]
       },
       uniforms: {
-        tex0: this.regl.prop('tex0'),
-        resolution: this.regl.prop('resolution')
+        tex0: this.engine.prop('tex0'),
+        resolution: this.engine.prop('resolution')
       },
       count: 3,
       depth: { enable: false }
     })
   }
 
-  _initOutputs (numOutputs) {
+  _initOutputs(numOutputs) {
     const self = this
     this.o = (Array(numOutputs)).fill().map((el, index) => {
       var o = new Output({
-        regl: this.regl,
+        engine: this.engine,
+        regl: this.regl, // backward compatibility
         width: this.width,
         height: this.height,
         precision: this.precision,
         label: `o${index}`
       })
-    //  o.render()
       o.id = index
-      self.synth['o'+index] = o
+      self.synth['o' + index] = o
       return o
     })
 
@@ -377,41 +330,49 @@ class HydraRenderer {
     this.output = this.o[0]
   }
 
-  _initSources (numSources) {
+  _initSources(numSources) {
     this.s = []
-    for(var i = 0; i < numSources; i++) {
+    for (var i = 0; i < numSources; i++) {
       this.createSource(i)
     }
   }
 
-  createSource (i) {
-    let s = new Source({regl: this.regl, pb: this.pb, width: this.width, height: this.height, label: `s${i}`})
+  createSource(i) {
+    let s = new Source({
+      engine: this.engine,
+      regl: this.regl, // backward compatibility
+      pb: this.pb,
+      width: this.width,
+      height: this.height,
+      label: `s${i}`
+    })
     this.synth['s' + this.s.length] = s
     this.s.push(s)
     return s
   }
 
-  _generateGlslTransforms () {
+  _generateGlslTransforms() {
     var self = this
     this.generator = new Generator({
       defaultOutput: this.o[0],
       defaultUniforms: this.o[0].uniforms,
       extendTransforms: this.extendTransforms,
-      changeListener: ({type, method, synth}) => {
-          if (type === 'add') {
-            self.synth[method] = synth.generators[method]
-            if(self.sandbox) self.sandbox.add(method)
-          } else if (type === 'remove') {
-            // what to do here? dangerously deleting window methods
-            //delete window[method]
-          }
-      //  }
+      engine: this.engine, // pass engine to generator
+      changeListener: ({ type, method, synth }) => {
+        if (type === 'add') {
+          self.synth[method] = synth.generators[method]
+          if (self.sandbox) self.sandbox.add(method)
+        } else if (type === 'remove') {
+          // what to do here? dangerously deleting window methods
+          //delete window[method]
+        }
+        //  }
       }
     })
     this.synth.setFunction = this.generator.setFunction.bind(this.generator)
   }
 
-  _render (output) {
+  _render(output) {
     if (output) {
       this.output = output
       this.isRenderingAll = false
@@ -421,62 +382,62 @@ class HydraRenderer {
   }
 
   // dt in ms
-  tick (dt, uniforms) {
+  tick(dt, uniforms) {
     try {
-    this.sandbox.tick()
-    if(this.detectAudio === true) this.synth.a.tick()
-  //  let updateInterval = 1000/this.synth.fps // ms
-    this.sandbox.set('time', this.synth.time += dt * 0.001 * this.synth.speed)
-    this.timeSinceLastUpdate += dt
-    if(!this.synth.fps || this.timeSinceLastUpdate >= 1000/this.synth.fps) {
-    //  console.log(1000/this.timeSinceLastUpdate)
-      this.synth.stats.fps = Math.ceil(1000/this.timeSinceLastUpdate)
-      if(this.synth.update) {
-        try { this.synth.update(this.timeSinceLastUpdate) } catch (e) { console.log(e) }
-      }
-    //  console.log(this.synth.speed, this.synth.time)
-      for (let i = 0; i < this.s.length; i++) {
-        this.s[i].tick(this.synth.time)
-      }
-    //  console.log(this.canvas.width, this.canvas.height)
-      const currentTime = this.synth.time;
-      for (let i = 0; i < this.o.length; i++) {
-        this.o[i].tick({
-          time: currentTime,
-          mouse: this.synth.mouse,
-          bpm: this.synth.bpm,
-          resolution: [this.canvas.width, this.canvas.height]
-        })
-      }
-      if (this.isRenderingAll) {
-        this.renderAll({
-          tex0: this.o[0].getCurrent(),
-          tex1: this.o[1].getCurrent(),
-          tex2: this.o[2].getCurrent(),
-          tex3: this.o[3].getCurrent(),
-          resolution: [this.canvas.width, this.canvas.height]
-        })
-      } else {
+      this.sandbox.tick()
+      if (this.detectAudio === true) this.synth.a.tick()
+      //  let updateInterval = 1000/this.synth.fps // ms
+      this.sandbox.set('time', this.synth.time += dt * 0.001 * this.synth.speed)
+      this.timeSinceLastUpdate += dt
+      if (!this.synth.fps || this.timeSinceLastUpdate >= 1000 / this.synth.fps) {
+        //  console.log(1000/this.timeSinceLastUpdate)
+        this.synth.stats.fps = Math.ceil(1000 / this.timeSinceLastUpdate)
+        if (this.synth.update) {
+          try { this.synth.update(this.timeSinceLastUpdate) } catch (e) { console.log(e) }
+        }
+        //  console.log(this.synth.speed, this.synth.time)
+        for (let i = 0; i < this.s.length; i++) {
+          this.s[i].tick(this.synth.time)
+        }
+        //  console.log(this.canvas.width, this.canvas.height)
+        const currentTime = this.synth.time;
+        for (let i = 0; i < this.o.length; i++) {
+          this.o[i].tick({
+            time: currentTime,
+            mouse: this.synth.mouse,
+            bpm: this.synth.bpm,
+            resolution: [this.canvas.width, this.canvas.height]
+          })
+        }
+        if (this.isRenderingAll) {
+          this.renderAll({
+            tex0: this.o[0].getCurrent(),
+            tex1: this.o[1].getCurrent(),
+            tex2: this.o[2].getCurrent(),
+            tex3: this.o[3].getCurrent(),
+            resolution: [this.canvas.width, this.canvas.height]
+          })
+        } else {
 
-        this.renderFbo({
-          tex0: this.output.getCurrent(),
-          resolution: [this.canvas.width, this.canvas.height]
-        })
+          this.renderFbo({
+            tex0: this.output.getCurrent(),
+            resolution: [this.canvas.width, this.canvas.height]
+          })
+        }
+        if (this.synth.afterUpdate) {
+          try { this.synth.afterUpdate(this.timeSinceLastUpdate) } catch (e) { console.log(e) }
+        }
+        this.timeSinceLastUpdate = 0
       }
-      if(this.synth.afterUpdate) {
-        try { this.synth.afterUpdate(this.timeSinceLastUpdate) } catch (e) { console.log(e) }
+      if (this.saveFrame === true) {
+        this.canvasToImage()
+        this.saveFrame = false
       }
-      this.timeSinceLastUpdate = 0
+    } catch (e) {
+      console.warn('Error during tick():', e)
+      //  this.regl.poll()
     }
-    if(this.saveFrame === true) {
-      this.canvasToImage()
-      this.saveFrame = false
-    }
-  } catch(e) {
-    console.warn('Error during tick():', e)
-  //  this.regl.poll()
   }
-}
 
 
 }

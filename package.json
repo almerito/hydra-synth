@@ -18,7 +18,10 @@
   "scripts": {
     "dev-ssl": "budo ./dev/index.js --ssl --open --live --port 8000 --",
     "dev": "budo ./dev/index.js --open --live --port 8000 -- -p esmify",
-    "build": "browserify ./src/index.js -p esmify --standalone Hydra > dist/hydra-synth.js"
+    "build": "browserify ./src/index.js -p esmify --standalone Hydra > dist/hydra-synth.js",
+    "build:esbuild": "esbuild ./src/index.js --bundle --format=iife --global-name=Hydra --define:global=window --outfile=dist/hydra-synth.js",
+    "build:esm": "esbuild ./src/index.js --bundle --format=esm --define:global=window --outfile=dist/hydra-synth.esm.js",
+    "dev:simple": "npx http-server . -p 8000 -c-1 -o dist/index.html"
   },
   "repository": {
     "type": "git",
@@ -45,6 +48,7 @@
   "devDependencies": {
     "browserify": "^17.0.0",
     "budo": "^11.8.4",
-    "esmify": "^2.1.1"
+    "esbuild": "^0.27.2",
+    "esmify": "^0.1.2"
   }
 }

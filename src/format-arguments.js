@@ -59,7 +59,7 @@ export default function formatArguments(transform, startIndex, synthContext) {
       typedArg.value = userArgs[index]
 
       if (typedArg.type === 'vec4') {
-        if (!(typedArg.value.type === "GlslSource" || typedArg.value.getTexture)) {
+        if (!typedArg.value || !(typedArg.value.type === "GlslSource" || typedArg.value.getTexture)) {
           throw new Error("Arguments must be a texture or GlslSource")
         }
       }
@@ -130,7 +130,7 @@ export default function formatArguments(transform, startIndex, synthContext) {
         typedArg.isUniform = true
       } else {
         // if passing in a texture reference, when function asks for vec4, convert to vec4
-        if (typedArg.value.getTexture && input.type === 'vec4') {
+        if (typedArg.value && typedArg.value.getTexture && input.type === 'vec4') {
           var x1 = typedArg.value
           typedArg.value = src(x1)
           typedArg.isUniform = false

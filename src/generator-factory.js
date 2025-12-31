@@ -1,26 +1,35 @@
 import GlslSource from './glsl-source.js'
-import glslFunctions from './glsl/glsl-functions.js'
+import glslFunctions from './shaders/basic-functions.js'
 
 class GeneratorFactory {
-  constructor ({
-      defaultUniforms,
-      defaultOutput,
-      extendTransforms = [],
-      changeListener = (() => {})
-    } = {}
-    ) {
+  constructor({
+    defaultUniforms,
+    defaultOutput,
+    extendTransforms = [],
+    engine = null,
+    changeListener = (() => { })
+  } = {}
+  ) {
     this.defaultOutput = defaultOutput
     this.defaultUniforms = defaultUniforms
     this.changeListener = changeListener
     this.extendTransforms = extendTransforms
+    this.engine = engine
     this.generators = {}
     this.init()
   }
-  init () {
-    const functions = glslFunctions()
+  init() {
+    // Get shader functions from engine if available, otherwise use default GLSL1 functions
+    let functions
+    if (this.engine && this.engine.getShaderFunctions) {
+      functions = this.engine.getShaderFunctions()
+    } else {
+      functions = glslFunctions()
+    }
+
     this.glslTransforms = {}
     this.generators = Object.entries(this.generators).reduce((prev, [method, transform]) => {
-      this.changeListener({type: 'remove', synth: this, method})
+      this.changeListener({ type: 'remove', synth: this, method })
       return prev
     }, {})
 
@@ -29,19 +38,17 @@ class GeneratorFactory {
       }
     })()
 
-    
-
     // add user definied transforms
     if (Array.isArray(this.extendTransforms)) {
-      functions.concat(this.extendTransforms)
+      functions = functions.concat(this.extendTransforms)
     } else if (typeof this.extendTransforms === 'object' && this.extendTransforms.type) {
       functions.push(this.extendTransforms)
     }
 
     return functions.map((transform) => this.setFunction(transform))
- }
+  }
 
- _addMethod (method, transform) {
+  _addMethod(method, transform) {
     const self = this
     this.glslTransforms[method] = transform
     if (transform.type === 'src') {
@@ -51,14 +58,15 @@ class GeneratorFactory {
         userArgs: args,
         defaultOutput: this.defaultOutput,
         defaultUniforms: this.defaultUniforms,
+        engine: this.engine,
         synth: self
       })
       this.generators[method] = func
-      this.changeListener({type: 'add', synth: this, method})
+      this.changeListener({ type: 'add', synth: this, method })
       return func
-    } else  {
+    } else {
       this.sourceClass.prototype[method] = function (...args) {
-        this.transforms.push({name: method, transform: transform, userArgs: args, synth: self})
+        this.transforms.push({ name: method, transform: transform, userArgs: args, synth: self })
         return this
       }
     }
@@ -67,7 +75,7 @@ class GeneratorFactory {
 
   setFunction(obj) {
     var processedGlsl = processGlsl(obj)
-    if(processedGlsl) this._addMethod(obj.name, processedGlsl)
+    if (processedGlsl) this._addMethod(obj.name, processedGlsl)
   }
 }
 
@@ -78,24 +86,24 @@ const typeLookup = {
   },
   'coord': {
     returnType: 'vec2',
-    args: [{ type: 'vec2', name: '_st'}]
+    args: [{ type: 'vec2', name: '_st' }]
   },
   'color': {
     returnType: 'vec4',
-    args: [{ type: 'vec4', name: '_c0'}]
+    args: [{ type: 'vec4', name: '_c0' }]
   },
   'combine': {
     returnType: 'vec4',
     args: [
-      { type: 'vec4', name: '_c0'},
-      { type: 'vec4', name: '_c1'}
+      { type: 'vec4', name: '_c0' },
+      { type: 'vec4', name: '_c1' }
     ]
   },
   'combineCoord': {
     returnType: 'vec2',
     args: [
-      { type: 'vec2', name: '_st'},
-      { type: 'vec4', name: '_c0'},
+      { type: 'vec2', name: '_st' },
+      { type: 'vec4', name: '_c0' },
     ]
   }
 }
@@ -120,13 +128,13 @@ const typeLookup = {
 //           default: 0.0
 //         }
 //   ],
-   //  glsl: `
-   //    vec2 st = _st;
-   //    float r = sin((st.x-offset*2/freq+time*sync)*freq)*0.5  + 0.5;
-   //    float g = sin((st.x+time*sync)*freq)*0.5 + 0.5;
-   //    float b = sin((st.x+offset/freq+time*sync)*freq)*0.5  + 0.5;
-   //    return vec4(r, g, b, 1.0);
-   // `
+//  glsl: `
+//    vec2 st = _st;
+//    float r = sin((st.x-offset*2/freq+time*sync)*freq)*0.5  + 0.5;
+//    float g = sin((st.x+time*sync)*freq)*0.5 + 0.5;
+//    float b = sin((st.x+offset/freq+time*sync)*freq)*0.5  + 0.5;
+//    return vec4(r, g, b, 1.0);
+// `
 // }
 
 // // generates glsl function:
@@ -140,21 +148,34 @@ const typeLookup = {
 
 function processGlsl(obj) {
   let t = typeLookup[obj.type]
-  if(t) {
+  if (t) {
     let inputs = t.args.concat(obj.inputs);
     let args = inputs.map((input) => `${input.type} ${input.name}`).join(', ')
     // console.log('args are ', args)
 
     let glslFunction =
-`
+      `
   ${t.returnType} ${obj.name}(${args}) {
       ${obj.glsl}
   }
 `
-    // First input gets handled specially by generator
-    obj.inputs = inputs.slice(1);
+    // Also wrap glsl3 if present
+    let glsl3Function = undefined
+    if (obj.glsl3) {
+      glsl3Function = `
+  ${t.returnType} ${obj.name}(${args}) {
+      ${obj.glsl3}
+  }
+`
+    }
 
-    return Object.assign({}, obj, { glsl: glslFunction})
+    // First input gets handled specially by generator
+    // IMPORTANT: Don't mutate obj directly, assign to result instead
+    const processedInputs = inputs.slice(1);
+
+    let result = Object.assign({}, obj, { glsl: glslFunction, inputs: processedInputs })
+    if (glsl3Function) result.glsl3 = glsl3Function
+    return result
   } else {
     console.warn(`type ${obj.type} not recognized`, obj, typeLookup)
   }
