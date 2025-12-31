@@ -101,10 +101,14 @@ class HydraRenderer {
 
     this.generator = undefined
 
-    this._initEngine()
-    this._initOutputs(numOutputs)
-    this._initSources(numSources)
-    this._generateGlslTransforms()
+    // Initialize engine (async for WebGPU support)
+    this.engineReady = this._initEngine().then(() => {
+      this._initOutputs(numOutputs)
+      this._initSources(numSources)
+      this._generateGlslTransforms()
+    }).catch(e => {
+      console.error('[hydra-synth] Engine initialization failed:', e)
+    })
 
     this.synth.screencap = () => {
       this.saveFrame = true
@@ -250,7 +254,7 @@ class HydraRenderer {
     }
   }
 
-  _initEngine() {
+  async _initEngine() {
     // Create engine instance from string identifier, class, or instance
     this.engine = createEngine(this.engineOption, {
       canvas: this.canvas,
@@ -259,8 +263,8 @@ class HydraRenderer {
       precision: this.precision
     })
 
-    // Initialize the engine
-    this.engine.init()
+    // Initialize the engine (await for async engines like WebGPU)
+    await this.engine.init()
 
     // For backward compatibility, expose regl if using ReglEngine
     if (this.engine.regl) {
