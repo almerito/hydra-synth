@@ -101,14 +101,12 @@ class HydraRenderer {
 
     this.generator = undefined
 
-    // Initialize engine (async for WebGPU support)
-    this.engineReady = this._initEngine().then(() => {
-      this._initOutputs(numOutputs)
-      this._initSources(numSources)
-      this._generateGlslTransforms()
-    }).catch(e => {
-      console.error('[hydra-synth] Engine initialization failed:', e)
-    })
+    // Initialize synchronously for most engines
+    // For async engines (WebGPU), engineReady will be a Promise
+    this.engineReady = this._initEngine()
+    this._initOutputs(numOutputs)
+    this._initSources(numSources)
+    this._generateGlslTransforms()
 
     this.synth.screencap = () => {
       this.saveFrame = true
@@ -254,7 +252,7 @@ class HydraRenderer {
     }
   }
 
-  async _initEngine() {
+  _initEngine() {
     // Create engine instance from string identifier, class, or instance
     this.engine = createEngine(this.engineOption, {
       canvas: this.canvas,
@@ -263,8 +261,14 @@ class HydraRenderer {
       precision: this.precision
     })
 
-    // Initialize the engine (await for async engines like WebGPU)
-    await this.engine.init()
+    // Initialize the engine
+    // NOTE: For async engines (WebGPU/WGSL), this returns a Promise
+    // that isn't awaited. WGSL support requires architectural changes.
+    const initResult = this.engine.init()
+    if (initResult && initResult.then) {
+      // Store promise for async engines, but don't wait
+      this.engineReady = initResult
+    }
 
     // For backward compatibility, expose regl if using ReglEngine
     if (this.engine.regl) {

@@ -26,11 +26,31 @@ class WGSLEngine extends IRenderEngine {
     // Lifecycle Methods
     // ============================================================
 
-    async init() {
+    /**
+     * Synchronous init that starts async initialization in background.
+     * Returns immediately (like other engines) but device won't be ready yet.
+     * Use _ensureReady() before operations that need the device.
+     */
+    init() {
         if (!navigator.gpu) {
-            throw new Error('WebGPU is not supported in this browser')
+            console.error('[WGSLEngine] WebGPU is not supported in this browser')
+            this._initError = new Error('WebGPU is not supported in this browser')
+            return this
         }
 
+        // Start async init, store promise for sync checking
+        this._initPromise = this._asyncInit().catch(err => {
+            console.error('[WGSLEngine] Initialization failed:', err)
+            this._initError = err
+        })
+
+        return this
+    }
+
+    /**
+     * Internal async initialization - do not call directly
+     */
+    async _asyncInit() {
         const adapter = await navigator.gpu.requestAdapter()
         if (!adapter) {
             throw new Error('Failed to get WebGPU adapter')
@@ -68,8 +88,32 @@ class WGSLEngine extends IRenderEngine {
         })
 
         this.initialized = true
+        console.log('[WGSLEngine] WebGPU initialized successfully')
         this.clear({ color: [0, 0, 0, 1] })
         return this
+    }
+
+    /**
+     * Wait for device to be ready. Call before any operation that needs device.
+     * Returns a Promise that resolves when ready.
+     */
+    async _ensureReady() {
+        if (this._initError) {
+            throw this._initError
+        }
+        if (!this.initialized && this._initPromise) {
+            await this._initPromise
+        }
+        if (this._initError) {
+            throw this._initError
+        }
+    }
+
+    /**
+     * Check if device is ready (sync check, for guards)
+     */
+    isReady() {
+        return this.initialized && !this._initError
     }
 
     destroy() {
@@ -96,6 +140,17 @@ class WGSLEngine extends IRenderEngine {
     // ============================================================
 
     createFramebuffer(options) {
+        // Guard: return stub if device not ready
+        if (!this.device) {
+            return {
+                texture: null,
+                view: null,
+                width: options.width,
+                height: options.height,
+                resize: () => { },
+                destroy: () => { }
+            }
+        }
         const { width, height } = options
 
         const texture = this.device.createTexture({
@@ -127,6 +182,19 @@ class WGSLEngine extends IRenderEngine {
     }
 
     createTexture(options) {
+        // Guard: return stub if device not ready
+        if (!this.device) {
+            return {
+                _texture: null,
+                view: null,
+                sampler: null,
+                width: options.width || 1,
+                height: options.height || 1,
+                resize: () => { },
+                destroy: () => { },
+                get texture() { return this._texture }
+            }
+        }
         const { width, height, shape, data } = options
 
         const texWidth = width || (shape && shape[0]) || 1
@@ -190,6 +258,10 @@ class WGSLEngine extends IRenderEngine {
     }
 
     createBuffer(data) {
+        // Guard: return stub if device not ready
+        if (!this.device) {
+            return null
+        }
         const floatData = new Float32Array(data.flat())
         const buffer = this.device.createBuffer({
             size: floatData.byteLength,
@@ -204,6 +276,11 @@ class WGSLEngine extends IRenderEngine {
     // ============================================================
 
     createDrawCommand(options) {
+        // Guard: return no-op function if device not ready
+        if (!this.device) {
+            console.warn('[WGSLEngine] createDrawCommand called before device ready, returning no-op')
+            return () => { } // Return no-op function
+        }
         const { frag, vert, uniforms, count, framebuffer } = options
         const self = this
 
@@ -266,11 +343,18 @@ ${frag}
             if (framebuffer) {
                 const fbo = typeof framebuffer === 'function' ? framebuffer() : framebuffer
                 targetView = fbo.view
+                // Skip render if framebuffer is stub (device not ready yet)
+                if (!targetView) {
+                    return
+                }
             } else {
                 targetView = this.context.getCurrentTexture().createView()
             }
 
-            // Create bind group with uniforms
+            // Skip if device not ready
+            if (!this.device) {
+                return
+            }
             const bindGroup = this.device.createBindGroup({
                 layout: pipeline.getBindGroupLayout(0),
                 entries: [{
