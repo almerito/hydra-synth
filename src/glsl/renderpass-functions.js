@@ -14,7 +14,7 @@ export default {
         type: 'float',
         name: 'directionX',
         default: 1.0
-      },{
+      }, {
         type: 'float',
         name: 'directionY',
         default: 0.0

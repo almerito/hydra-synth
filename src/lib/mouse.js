@@ -4,7 +4,7 @@ export default mouseListen
 
 import mouse from './mouse-event.js'
 
-function mouseListen (element, callback) {
+function mouseListen(element, callback) {
   if (!callback) {
     callback = element
     element = window
@@ -21,7 +21,7 @@ function mouseListen (element, callback) {
   }
   var attached = false
 
-  function updateMods (ev) {
+  function updateMods(ev) {
     var changed = false
     if ('altKey' in ev) {
       changed = changed || ev.altKey !== mods.alt
@@ -42,7 +42,7 @@ function mouseListen (element, callback) {
     return changed
   }
 
-  function handleEvent (nextButtons, ev) {
+  function handleEvent(nextButtons, ev) {
     var nextX = mouse.x(ev)
     var nextY = mouse.y(ev)
     if ('buttons' in ev) {
@@ -59,11 +59,11 @@ function mouseListen (element, callback) {
     }
   }
 
-  function clearState (ev) {
+  function clearState(ev) {
     handleEvent(0, ev)
   }
 
-  function handleBlur () {
+  function handleBlur() {
     if (buttonState ||
       x ||
       y ||
@@ -78,13 +78,13 @@ function mouseListen (element, callback) {
     }
   }
 
-  function handleMods (ev) {
+  function handleMods(ev) {
     if (updateMods(ev)) {
       callback && callback(buttonState, x, y, mods)
     }
   }
 
-  function handleMouseMove (ev) {
+  function handleMouseMove(ev) {
     if (mouse.buttons(ev) === 0) {
       handleEvent(0, ev)
     } else {
@@ -92,15 +92,15 @@ function mouseListen (element, callback) {
     }
   }
 
-  function handleMouseDown (ev) {
+  function handleMouseDown(ev) {
     handleEvent(buttonState | mouse.buttons(ev), ev)
   }
 
-  function handleMouseUp (ev) {
+  function handleMouseUp(ev) {
     handleEvent(buttonState & ~mouse.buttons(ev), ev)
   }
 
-  function attachListeners () {
+  function attachListeners() {
     if (attached) {
       return
     }
@@ -132,7 +132,7 @@ function mouseListen (element, callback) {
     }
   }
 
-  function detachListeners () {
+  function detachListeners() {
     if (!attached) {
       return
     }

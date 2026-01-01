@@ -14,21 +14,21 @@ class EvalSandbox {
   }
 
   add(name) {
-    if(this.makeGlobal) window[name] = this.parent[name]
+    if (this.makeGlobal) window[name] = this.parent[name]
     // this.sandbox.addToContext(name, `parent.${name}`)
   }
 
-// sets on window as well as synth object if global (not needed for objects, which can be set directly)
+  // sets on window as well as synth object if global (not needed for objects, which can be set directly)
 
   set(property, value) {
-    if(this.makeGlobal) {
+    if (this.makeGlobal) {
       window[property] = value
     }
     this.parent[property] = value
   }
 
   tick() {
-    if(this.makeGlobal) {
+    if (this.makeGlobal) {
       this.userProps.forEach((property) => {
         this.parent[property] = window[property]
       })

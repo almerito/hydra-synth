@@ -20,10 +20,10 @@ export default (parent) => {
     eval: (code) => sandbox.eval(code)
   }
 
-  function createSandbox (initial) {
+  function createSandbox(initial) {
     globalThis.eval(initial)
     // optional params
-    var localEval = function (code)  {
+    var localEval = function (code) {
       globalThis.eval(code)
     }
 

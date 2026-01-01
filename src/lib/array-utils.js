@@ -13,36 +13,36 @@ var map = (num, in_min, in_max, out_min, out_max) => {
 // copied-n-pasted from
 // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Remainder#description
 var modulo = (n, d) => {
-    return ((n % d) + d) % d;
+  return ((n % d) + d) % d;
 }
 
 export default {
   init: () => {
 
-    Array.prototype.fast = function(speed = 1) {
+    Array.prototype.fast = function (speed = 1) {
       this._speed = speed
       return this
     }
 
-    Array.prototype.smooth = function(smooth = 1) {
+    Array.prototype.smooth = function (smooth = 1) {
       this._smooth = smooth
       return this
     }
 
-    Array.prototype.ease = function(ease = 'linear') {
+    Array.prototype.ease = function (ease = 'linear') {
       if (typeof ease == 'function') {
         this._smooth = 1
         this._ease = ease
       }
-      else if (easing[ease]){
+      else if (easing[ease]) {
         this._smooth = 1
         this._ease = easing[ease]
       }
       return this
     }
 
-    Array.prototype.offset = function(offset = 0.5) {
-      this._offset = offset%1.0
+    Array.prototype.offset = function (offset = 0.5) {
+      this._offset = offset % 1.0
       return this
     }
 
@@ -51,9 +51,9 @@ export default {
     //   return this
     // }
 
-    Array.prototype.fit = function(low = 0, high =1) {
+    Array.prototype.fit = function (low = 0, high = 1) {
       let lowest = Math.min(...this)
-      let highest =  Math.max(...this)
+      let highest = Math.max(...this)
       var newArr = this.map((num) => map(num, lowest, highest, low, high))
       newArr._speed = this._speed
       newArr._smooth = this._smooth
@@ -62,12 +62,12 @@ export default {
     }
   },
 
-  getValue: (arr = []) => ({time, bpm}) =>{
+  getValue: (arr = []) => ({ time, bpm }) => {
     let speed = arr._speed ? arr._speed : 1
     let smooth = arr._smooth ? arr._smooth : 0
     let index = time * speed * (bpm / 60) + (arr._offset || 0)
 
-    if (smooth!==0) {
+    if (smooth !== 0) {
       let ease = arr._ease ? arr._ease : easing['linear']
       let _index = index - (smooth / 2)
       // Compute the first value used for the interpolation: wrap _index inside the range [0, arr.length), then round the resulting value towards 0.
@@ -85,7 +85,7 @@ export default {
       // This would cause the final interpolation to assume values inconsistent with the later ones.
       // E.g. [0, 1].smooth() should always generate values between 0 and 1, but the initial values would be negative.
       // We need to use the modulo operation to prevent this.
-      let t = Math.min(modulo(_index, 1)/smooth,1)
+      let t = Math.min(modulo(_index, 1) / smooth, 1)
       return ease(t) * (nextValue - currValue) + currValue
     }
     else {

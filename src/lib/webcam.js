@@ -4,13 +4,13 @@ export default function (deviceId) {
   return navigator.mediaDevices.enumerateDevices()
     .then(devices => devices.filter(devices => devices.kind === 'videoinput'))
     .then(cameras => {
-      let constraints = { audio: false, video: true}
+      let constraints = { audio: false, video: true }
       if (cameras[deviceId]) {
         constraints['video'] = {
           deviceId: { exact: cameras[deviceId].deviceId }
         }
       }
-    //  console.log(cameras)
+      //  console.log(cameras)
       return window.navigator.mediaDevices.getUserMedia(constraints)
     })
     .then(stream => {
@@ -22,7 +22,7 @@ export default function (deviceId) {
       video.srcObject = stream
       return new Promise((resolve, reject) => {
         video.addEventListener('loadedmetadata', () => {
-          video.play().then(() => resolve({video: video}))
+          video.play().then(() => resolve({ video: video }))
         })
       })
     })

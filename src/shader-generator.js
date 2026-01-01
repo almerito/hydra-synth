@@ -4,16 +4,16 @@ import Sandbox from './eval-sandbox.js'
 const baseUniforms = ['s0', 's1', 's2', 's3', 'o0', 'o1', 'o2'] // names of uniforms usually used in hydra. These can be customized
 
 class ShaderGenerator {
-  constructor({ defaultUniforms = {time: 0, resolution: [1280, 720]}, customUniforms = baseUniforms, extendTransforms = []} = {}) {
+  constructor({ defaultUniforms = { time: 0, resolution: [1280, 720] }, customUniforms = baseUniforms, extendTransforms = [] } = {}) {
     var self = this
     self.renderer = {}
 
     var generatorOpts = { defaultUniforms, extendTransforms }
-    generatorOpts.changeListener = ({type, method, synth}) => {
-        if (type === 'add') {
-          self.renderer[method] = synth.generators[method]
-        } else if (type === 'remove') {
-        }
+    generatorOpts.changeListener = ({ type, method, synth }) => {
+      if (type === 'add') {
+        self.renderer[method] = synth.generators[method]
+      } else if (type === 'remove') {
+      }
     }
     generatorOpts.defaultOutput = {
       render: (pass) => self.generatedCode = pass[0]
