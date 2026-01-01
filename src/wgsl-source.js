@@ -57,20 +57,68 @@ WgslSource.prototype.compile = function (output) {
     const helpers = Object.values(utilityFunctions).map(f => f.wgsl).join('\n')
 
     const functions = shaderInfo.wgslFunctions.map(t => {
-        // transform.transform.wgsl should be present
-        return t.transform.wgsl || '// missing wgsl for ' + t.name
+        // Handle case where t.transform might be undefined if t is just the transform itself
+        const def = t.transform || t;
+        const name = def.name;
+        const type = def.type;
+        const body = def.wgsl;
+
+        if (!body) return '// missing wgsl for ' + name;
+
+        // Determine implicit arguments and return type based on function type
+        let args = [];
+        let returnType = 'vec4<f32>';
+
+        if (type === 'src') {
+            args.push('_st: vec2<f32>');
+            returnType = 'vec4<f32>';
+        } else if (type === 'coord') {
+            args.push('_st: vec2<f32>');
+            returnType = 'vec2<f32>';
+        } else if (type === 'color') {
+            args.push('_c0: vec4<f32>');
+            returnType = 'vec4<f32>';
+        } else if (type === 'combine') {
+            args.push('_c0: vec4<f32>');
+            args.push('_c1: vec4<f32>');
+            returnType = 'vec4<f32>';
+        } else if (type === 'combineCoord') {
+            args.push('_st: vec2<f32>');
+            args.push('_c0: vec4<f32>');
+            returnType = 'vec2<f32>';
+        }
+
+        // Add explicit inputs
+        if (def.inputs) {
+            def.inputs.forEach(input => {
+                let inputType = input.type === 'float' ? 'f32' : input.type;
+                if (input.type === 'sampler2D') inputType = 'texture_2d<f32>';
+                args.push(`${input.name}: ${inputType}`);
+            });
+        }
+
+        // Replace global 'time' with 'uniforms.time' in the body
+        // Basic regex replacement, might need to be more robust for edge cases but sufficient for standard hydra functions
+        // avoiding replacing if it's already uniforms.time or part of another word
+        let processedBody = body.replace(/([^a-zA-Z0-9_.])time([^a-zA-Z0-9_])/g, '$1uniforms.time$2');
+
+        return `
+fn ${name}(${args.join(', ')}) -> ${returnType} {
+${processedBody}
+}
+`;
     }).join('\n')
 
     const fragmentBody = `
-    ${helpers}
-    ${functions}
-    
     ${shaderInfo.fragColor}
     c = c; // Ensure c is used
   `
 
     return {
-        wgslCode: fragmentBody,
+        wgsl: {
+            header: helpers + '\n' + functions,
+            body: fragmentBody
+        },
         uniforms: Object.assign({}, this.defaultUniforms, uniforms)
     }
 }

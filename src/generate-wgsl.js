@@ -9,7 +9,7 @@ export default function (transforms) {
         fragColor: ''
     }
 
-    var gen = generateWgsl(transforms, shaderParams)('c', 'st')
+    var gen = generateWgsl(transforms, shaderParams)('c', '_st')
 
     shaderParams.fragColor = gen
 
@@ -48,7 +48,7 @@ function generateWgsl(transforms, shaderParams) {
         if (transform.transform.type === 'src') {
             generator = (c, uv) =>
                 `${generateInputs(inputs, shaderParams)(`${c}${i}`, uv)}
-         var ${c}: vec4<f32> = ${shaderString(`${c}${i}`, uv, transform.name, inputs)};`
+         ${c} = ${shaderString(`${c}${i}`, uv, transform.name, inputs)};`
         } else if (transform.transform.type === 'color') {
             generator = (c, uv) =>
                 `${generateInputs(inputs, shaderParams)(`${c}${i}`, uv)}
@@ -60,15 +60,76 @@ function generateWgsl(transforms, shaderParams) {
          ${uv} = ${shaderString(`${c}${i}`, `${uv}`, transform.name, inputs)};
          ${prev(c, uv)}`
         } else if (transform.transform.type === 'combine') {
-            generator = (c, uv) =>
-                `${generateInputs(inputs, shaderParams)(`${c}${i}`, uv)}
+            generator = (c, uv) => {
+                // For combine, userArgs[0] (modulator) was skipped by formatArguments
+                // We generate code for it here
+                let modSetup = '';
+                let modVar = 'vec4<f32>(0.0)';
+
+                if (transform.userArgs.length > 0) {
+                    let dummyTransform = {
+                        transform: { inputs: [{ type: 'vec4', name: 'mod', default: 0 }] },
+                        userArgs: [transform.userArgs[0]],
+                        synth: transform.synth
+                    };
+                    // Use formatArguments to robustly handle the input (texture, number, transform chain)
+                    let formattedArgs = formatArguments(dummyTransform, shaderParams.uniforms.length, transform.synth);
+                    formattedArgs.forEach(arg => { if (arg.isUniform) shaderParams.uniforms.push(arg); });
+
+                    let modArg = formattedArgs[0];
+                    if (modArg.value && modArg.value.transforms) {
+                        let modC = `${c}${i}_mod`;
+                        modSetup = `var ${modC}: vec4<f32> = vec4<f32>(0.0);
+                         ${generateWgsl(modArg.value.transforms, shaderParams)(modC, uv)}`;
+                        modVar = modC;
+                    } else if (modArg.isUniform) {
+                        modVar = `uniforms.${modArg.name}`;
+                    } else {
+                        modVar = modArg.value;
+                    }
+                }
+
+                // Inject modVar into shaderString call. 
+                // We pass `${c}, ${modVar}` as the 'uv' argument so it becomes name(c, modVar, inputs...)
+                return `${generateInputs(inputs, shaderParams)(`${c}${i}`, uv)}
+         ${modSetup}
          ${prev(c, uv)}
-         ${c} = ${shaderString(`${c}${i}`, `${c}`, transform.name, inputs)};`
+         ${c} = ${shaderString(`${c}${i}`, `${c}, ${modVar}`, transform.name, inputs)};`
+            }
         } else if (transform.transform.type === 'combineCoord') {
-            generator = (c, uv) =>
-                `${generateInputs(inputs, shaderParams)(`${c}${i}`, uv)}
-         ${uv} = ${shaderString(`${c}${i}`, `${uv}`, transform.name, inputs)};
+            generator = (c, uv) => {
+                let modSetup = '';
+                let modVar = 'vec4<f32>(0.0)';
+
+                if (transform.userArgs.length > 0) {
+                    let dummyTransform = {
+                        transform: { inputs: [{ type: 'vec4', name: 'mod', default: 0 }] },
+                        userArgs: [transform.userArgs[0]],
+                        synth: transform.synth
+                    };
+                    let formattedArgs = formatArguments(dummyTransform, shaderParams.uniforms.length, transform.synth);
+                    formattedArgs.forEach(arg => { if (arg.isUniform) shaderParams.uniforms.push(arg); });
+
+                    let modArg = formattedArgs[0];
+                    if (modArg.value && modArg.value.transforms) {
+                        let modC = `${c}${i}_mod`;
+                        modSetup = `var ${modC}: vec4<f32> = vec4<f32>(0.0);
+                         ${generateWgsl(modArg.value.transforms, shaderParams)(modC, uv)}`;
+                        modVar = modC; // Modulator is a color (vec4)
+                    } else if (modArg.isUniform) {
+                        modVar = `uniforms.${modArg.name}`;
+                    } else {
+                        modVar = modArg.value;
+                    }
+                }
+
+                // shaderString(c, uv, method, inputs) -> name(uv, inputs...)
+                // We pass `${uv}, ${modVar}` as the 'uv' argument so it becomes name(uv, modVar, inputs...)
+                return `${generateInputs(inputs, shaderParams)(`${c}${i}`, uv)}
+                 ${modSetup}
+         ${uv} = ${shaderString(`${c}${i}`, `${uv}, ${modVar}`, transform.name, inputs)};
          ${prev(c, uv)}`
+            }
         }
     })
 
@@ -85,7 +146,9 @@ function generateInputs(inputs, shaderParams) {
                 let ci = generateInputName(c, i)
                 let uvi = generateInputName(`${uv}_${c}`, i)
                 // WGSL: var uvi: vec2<f32> = uv;
+                // WGSL: var ci: vec4<f32> = vec4<f32>(0.0);
                 return `var ${uvi}: vec2<f32> = ${uv};
+          var ${ci}: vec4<f32> = vec4<f32>(0.0);
          ${prev(c, uv)}
          ${generateWgsl(input.value.transforms, shaderParams)(ci, uvi)}`
             }

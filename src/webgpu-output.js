@@ -13,16 +13,32 @@ class WebGPUOutput {
         this.height = height;
         this.pingPongIndex = 0;
 
+        // Resources will be initialized when device is available
+        this.fbos = [];
+        this.pipeline = null;
+        this.bindGroup = null;
+        this.uniformBuffer = null;
+        this.vertexBuffer = null;
+        this.sampler = null;
+
+        if (this.device) {
+            this.initDevice(this.device, this.context, this.format);
+        }
+    }
+
+    setDevice(device, context, format) {
+        this.device = device;
+        this.context = context;
+        this.format = format || this.format;
+        this.initDevice(device, context, this.format);
+    }
+
+    initDevice(device, context, format) {
         // Create framebuffers for ping-pong rendering
         this.fbos = [
             this._createFramebuffer(),
             this._createFramebuffer()
         ];
-
-        // Current pipeline and bind group
-        this.pipeline = null;
-        this.bindGroup = null;
-        this.uniformBuffer = null;
 
         // Vertex buffer for fullscreen quad
         this.vertexBuffer = this._createVertexBuffer();
@@ -37,6 +53,7 @@ class WebGPUOutput {
     }
 
     _createFramebuffer() {
+        if (!this.device) return null;
         return this.device.createTexture({
             size: { width: this.width, height: this.height },
             format: this.format,
@@ -47,6 +64,7 @@ class WebGPUOutput {
     }
 
     _createVertexBuffer() {
+        if (!this.device) return null;
         // Fullscreen triangle vertices
         const vertices = new Float32Array([
             -1.0, -1.0,
@@ -67,6 +85,7 @@ class WebGPUOutput {
     }
 
     init() {
+        if (!this.device) return;
         // Create uniform buffer for time and resolution
         this.uniformBuffer = this.device.createBuffer({
             size: 16, // vec2 resolution + float time + padding
@@ -78,8 +97,10 @@ class WebGPUOutput {
         this.width = width;
         this.height = height;
 
+        if (!this.device || this.fbos.length === 0) return;
+
         // Destroy old framebuffers
-        this.fbos.forEach(fbo => fbo.destroy());
+        this.fbos.forEach(fbo => fbo && fbo.destroy());
 
         // Create new framebuffers
         this.fbos = [
@@ -89,15 +110,18 @@ class WebGPUOutput {
     }
 
     getCurrent() {
+        if (this.fbos.length === 0) return null;
         return this.fbos[this.pingPongIndex];
     }
 
     getTexture() {
+        if (this.fbos.length === 0) return null;
         const index = this.pingPongIndex ? 0 : 1;
         return this.fbos[index];
     }
 
     getPrevBuffer() {
+        if (this.fbos.length === 0) return null;
         return this.fbos[this.pingPongIndex];
     }
 
@@ -106,11 +130,24 @@ class WebGPUOutput {
      * @param {object} pass - Render pass with shader code and uniforms
      */
     async render(pass) {
-        const { wgslCode, uniforms } = pass;
+        if (!this.device) return;
+        const { wgsl, uniforms } = pass;
+
+        // wgsl might be a string (old way) or object (new way)
+        // support both for transition but prefer object
+        let header = '';
+        let body = '';
+
+        if (typeof wgsl === 'object') {
+            header = wgsl.header || '';
+            body = wgsl.body || '';
+        } else {
+            body = wgsl || '';
+        }
 
         // Create shader module
         const shaderModule = this.device.createShaderModule({
-            code: this._buildFullShader(wgslCode),
+            code: this._buildFullShader(header, body),
         });
 
         // Create bind group layout
@@ -175,7 +212,7 @@ class WebGPUOutput {
         });
     }
 
-    _buildFullShader(fragmentCode) {
+    _buildFullShader(header, fragmentCode) {
         return `
 // Uniforms
 struct Uniforms {
@@ -201,7 +238,10 @@ fn vs_main(@location(0) pos: vec2<f32>) -> VertexOutput {
   return output;
 }
 
-// Fragment shader
+// Fragment shader Helper Functions
+${header}
+
+// Main Fragment Shader
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   let time = uniforms.time;
@@ -232,8 +272,25 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         ]);
         this.device.queue.writeBuffer(this.uniformBuffer, 0, uniformData);
 
-        // Swap ping-pong
+        // Get the texture to READ from (previous frame's output)
+        const prevBufferTexture = this.fbos[this.pingPongIndex];
+
+        // Swap ping-pong AFTER getting prevBuffer reference
         this.pingPongIndex = this.pingPongIndex ? 0 : 1;
+
+        // Get the texture to WRITE to (current frame's output)
+        const currentRenderTarget = this.fbos[this.pingPongIndex];
+
+        // Recreate bind group with correct prevBuffer texture
+        // This ensures we read from the previous frame's texture, not the current render target
+        const bindGroup = this.device.createBindGroup({
+            layout: this.pipeline.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: this.uniformBuffer } },
+                { binding: 1, resource: this.sampler },
+                { binding: 2, resource: prevBufferTexture.createView() }
+            ]
+        });
 
         // Create command encoder
         const commandEncoder = this.device.createCommandEncoder();
@@ -241,7 +298,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         // Render pass to framebuffer
         const renderPass = commandEncoder.beginRenderPass({
             colorAttachments: [{
-                view: this.fbos[this.pingPongIndex].createView(),
+                view: currentRenderTarget.createView(),
                 loadOp: 'clear',
                 storeOp: 'store',
                 clearValue: { r: 0, g: 0, b: 0, a: 1 }
@@ -249,7 +306,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         });
 
         renderPass.setPipeline(this.pipeline);
-        renderPass.setBindGroup(0, this.bindGroup);
+        renderPass.setBindGroup(0, bindGroup);
         renderPass.setVertexBuffer(0, this.vertexBuffer);
         renderPass.draw(3);
         renderPass.end();
@@ -265,6 +322,20 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     renderToScreen(props) {
         if (!this.pipeline) return;
 
+        // After tick(), pingPongIndex points to the texture that was just rendered to
+        // We want to read from that texture and display it on screen
+        const textureToDisplay = this.fbos[this.pingPongIndex];
+
+        // Create bind group with the correct texture
+        const bindGroup = this.device.createBindGroup({
+            layout: this.pipeline.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: this.uniformBuffer } },
+                { binding: 1, resource: this.sampler },
+                { binding: 2, resource: textureToDisplay.createView() }
+            ]
+        });
+
         const commandEncoder = this.device.createCommandEncoder();
 
         const renderPass = commandEncoder.beginRenderPass({
@@ -277,7 +348,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         });
 
         renderPass.setPipeline(this.pipeline);
-        renderPass.setBindGroup(0, this.bindGroup);
+        renderPass.setBindGroup(0, bindGroup);
         renderPass.setVertexBuffer(0, this.vertexBuffer);
         renderPass.draw(3);
         renderPass.end();

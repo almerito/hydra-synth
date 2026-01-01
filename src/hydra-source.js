@@ -16,11 +16,30 @@ class HydraSource {
 
     // Create initial 1x1 WebGPU texture
     this.tex = this._createTexture(1, 1)
+
+    // Store parameters for deferred initialization if needed
+    this._deferred = {
+      width: width,
+      height: height
+    }
+  }
+
+  setDevice(device) {
+    this.device = device
+
+    // Re-create texture if we have pending params or just default
+    if (this._deferred) {
+      this.tex = this._createTexture(this._deferred.width, this._deferred.height)
+      // If we have a source, update it
+      if (this.src) {
+        this._updateTexture(this.src)
+      }
+    }
   }
 
   _createTexture(width, height) {
     if (!this.device) {
-      console.warn('[HydraSource] Device not available, texture creation deferred')
+      if (width && height) this._deferred = { width, height }
       return null
     }
 
@@ -45,6 +64,8 @@ class HydraSource {
       if (this.tex) this.tex.destroy()
       this.tex = this._createTexture(width, height)
     }
+
+    if (!this.tex) return
 
     // Copy image data to texture
     if (source instanceof HTMLVideoElement ||

@@ -55,27 +55,32 @@ export default function formatArguments(transform, startIndex, synthContext) {
     }
 
     // if user has input something for this argument
-    if (userArgs.length > index) {
-      typedArg.value = userArgs[index]
+    // For combine/combineCoord, the first argument in userArgs is the modulator (texture),
+    // so we shift by 1 to match inputs definitions.
+    const isCombine = transform.transform.type === 'combine' || transform.transform.type === 'combineCoord';
+    const userArgIndex = isCombine ? index + 1 : index;
+
+    if (userArgs.length > userArgIndex) {
+      typedArg.value = userArgs[userArgIndex]
 
       if (typedArg.type === 'vec4') {
-        if (!(typedArg.value.type === "GlslSource" || typedArg.value.getTexture)) {
+        if (!(typedArg.value.type === "GlslSource" || typedArg.value.getTexture || typedArg.value.transforms)) {
           throw new Error("Arguments must be a texture or GlslSource")
         }
       }
       // do something if a composite or transform
 
-      if (typeof userArgs[index] === 'function') {
+      if (typeof userArgs[userArgIndex] === 'function') {
         // if (typedArg.vecLen > 0) { // expected input is a vector, not a scalar
-        //    typedArg.value = (context, props, batchId) => (fillArrayWithDefaults(userArgs[index](props), typedArg.vecLen))
+        //    typedArg.value = (context, props, batchId) => (fillArrayWithDefaults(userArgs[userArgIndex](props), typedArg.vecLen))
         // } else {
         typedArg.value = (context, props, batchId) => {
           try {
-            const val = userArgs[index](props)
+            const val = userArgs[userArgIndex](props)
             if (typeof val === 'number') {
               return val
             } else {
-              console.warn('function does not return a number', userArgs[index])
+              console.warn('function does not return a number', userArgs[userArgIndex])
             }
             return input.default
           } catch (e) {
@@ -86,16 +91,16 @@ export default function formatArguments(transform, startIndex, synthContext) {
         //  }
 
         typedArg.isUniform = true
-      } else if (userArgs[index].constructor === Array) {
+      } else if (userArgs[userArgIndex].constructor === Array) {
         //   if (typedArg.vecLen > 0) { // expected input is a vector, not a scalar
         //     typedArg.isUniform = true
         //     typedArg.value = fillArrayWithDefaults(typedArg.value, typedArg.vecLen)
         //  } else {
         //  console.log("is Array")
         // filter out values that are not a number
-        // const filteredArray = userArgs[index].filter((val) => typeof val === 'number')
+        // const filteredArray = userArgs[userArgIndex].filter((val) => typeof val === 'number')
         // typedArg.value = (context, props, batchId) => arrayUtils.getValue(filteredArray)(props)
-        typedArg.value = (context, props, batchId) => arrayUtils.getValue(userArgs[index])(props)
+        typedArg.value = (context, props, batchId) => arrayUtils.getValue(userArgs[userArgIndex])(props)
         typedArg.isUniform = true
         // }
       }
@@ -123,17 +128,20 @@ export default function formatArguments(transform, startIndex, synthContext) {
       } else if (typedArg.type.startsWith('vec') && typeof typedArg.value === 'object' && Array.isArray(typedArg.value)) {
         typedArg.isUniform = false
         typedArg.value = `${typedArg.type}(${typedArg.value.map(ensure_decimal_dot).join(', ')})`
-      } else if (input.type === 'sampler2D') {
-        // typedArg.tex = typedArg.value
-        var x = typedArg.value
-        typedArg.value = () => (x.getTexture())
-        typedArg.isUniform = true
       } else {
         // if passing in a texture reference, when function asks for vec4, convert to vec4
-        if (typedArg.value.getTexture && input.type === 'vec4') {
-          var x1 = typedArg.value
-          typedArg.value = src(x1)
-          typedArg.isUniform = false
+        // Also handle cases where getTexture exists but type might be inferred differently
+        if (typedArg.value && typedArg.value.getTexture) {
+          if (input.type === 'sampler2D') {
+            var x = typedArg.value
+            typedArg.value = () => (x.getTexture())
+            typedArg.isUniform = true
+          } else {
+            // assume it should be treated as a source (vec4 color)
+            var x1 = typedArg.value
+            typedArg.value = src(x1)
+            typedArg.isUniform = false
+          }
         }
       }
 

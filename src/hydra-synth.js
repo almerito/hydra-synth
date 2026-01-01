@@ -100,11 +100,17 @@ class HydraRenderer {
 
     this.generator = undefined
 
+    // Initialize things synchronously (without device) so globals are ready
+    this._initOutputs(numOutputs)
+    this._initSources(numSources)
+    this._generateGlslTransforms()
+
     // Start WebGPU initialization in background (non-blocking)
-    this._initWebGPU().then(() => {
-      this._initOutputs(numOutputs)
-      this._initSources(numSources)
-      this._generateGlslTransforms()
+    this._initWebGPU().then((device) => {
+      // Pass the device and context to outputs and sources now that they are ready
+      this.o.forEach((output) => output.setDevice(device, this.gpuContext, this.gpuFormat))
+      this.s.forEach((source) => source.setDevice(device))
+
       this._flushPendingRenders()
     }).catch(err => {
       console.error('[Hydra] WebGPU initialization failed:', err)
