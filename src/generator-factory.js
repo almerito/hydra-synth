@@ -1,14 +1,19 @@
-import GlslSource from './glsl-source.js'
+
+import generateWgsl from './generate-wgsl.js'
+import WgslSource from './wgsl-source.js'
 import glslFunctions from './glsl/glsl-functions.js'
 
+// This factory handles creating WGSL shaders and wrappers
+// It replaces the GLSL-only logic from the original generator-factory
+// but maintains the same API for the Hydra runtime
 class GeneratorFactory {
-  constructor ({
-      defaultUniforms,
-      defaultOutput,
-      extendTransforms = [],
-      changeListener = (() => {})
-    } = {}
-    ) {
+  constructor({
+    defaultUniforms,
+    defaultOutput,
+    extendTransforms = [],
+    changeListener = (() => { })
+  } = {}
+  ) {
     this.defaultOutput = defaultOutput
     this.defaultUniforms = defaultUniforms
     this.changeListener = changeListener
@@ -16,20 +21,19 @@ class GeneratorFactory {
     this.generators = {}
     this.init()
   }
-  init () {
+
+  init() {
+    // We import the functions which now have .wgsl property
+    // We can filter/map them if needed to ensure they are WGSL-ready
     const functions = glslFunctions()
-    this.glslTransforms = {}
+
+    this.wgslTransforms = {}
     this.generators = Object.entries(this.generators).reduce((prev, [method, transform]) => {
-      this.changeListener({type: 'remove', synth: this, method})
+      this.changeListener({ type: 'remove', synth: this, method })
       return prev
     }, {})
 
-    this.sourceClass = (() => {
-      return class extends GlslSource {
-      }
-    })()
-
-    
+    this.sourceClass = WgslSource
 
     // add user definied transforms
     if (Array.isArray(this.extendTransforms)) {
@@ -39,11 +43,11 @@ class GeneratorFactory {
     }
 
     return functions.map((transform) => this.setFunction(transform))
- }
+  }
 
- _addMethod (method, transform) {
+  _addMethod(method, transform) {
     const self = this
-    this.glslTransforms[method] = transform
+    this.wgslTransforms[method] = transform
     if (transform.type === 'src') {
       const func = (...args) => new this.sourceClass({
         name: method,
@@ -54,11 +58,11 @@ class GeneratorFactory {
         synth: self
       })
       this.generators[method] = func
-      this.changeListener({type: 'add', synth: this, method})
+      this.changeListener({ type: 'add', synth: this, method })
       return func
-    } else  {
+    } else {
       this.sourceClass.prototype[method] = function (...args) {
-        this.transforms.push({name: method, transform: transform, userArgs: args, synth: self})
+        this.transforms.push({ name: method, transform: transform, userArgs: args, synth: self })
         return this
       }
     }
@@ -66,99 +70,13 @@ class GeneratorFactory {
   }
 
   setFunction(obj) {
-    var processedGlsl = processGlsl(obj)
-    if(processedGlsl) this._addMethod(obj.name, processedGlsl)
+    // In WGSL mode, we might not need "processGlsl" type checking as strictly 
+    // if we trust the wgsl string, but we should validate or prepare it.
+    // For now, pass it through.
+    if (obj.wgsl || obj.glsl) {
+      this._addMethod(obj.name, obj)
+    }
   }
-}
-
-const typeLookup = {
-  'src': {
-    returnType: 'vec4',
-    args: [{ type: 'vec2', name: '_st' }]
-  },
-  'coord': {
-    returnType: 'vec2',
-    args: [{ type: 'vec2', name: '_st'}]
-  },
-  'color': {
-    returnType: 'vec4',
-    args: [{ type: 'vec4', name: '_c0'}]
-  },
-  'combine': {
-    returnType: 'vec4',
-    args: [
-      { type: 'vec4', name: '_c0'},
-      { type: 'vec4', name: '_c1'}
-    ]
-  },
-  'combineCoord': {
-    returnType: 'vec2',
-    args: [
-      { type: 'vec2', name: '_st'},
-      { type: 'vec4', name: '_c0'},
-    ]
-  }
-}
-// expects glsl of format
-// {
-//   name: 'osc', // name that will be used to access function as well as within glsl
-//   type: 'src', // can be src: vec4(vec2 _st), coord: vec2(vec2 _st), color: vec4(vec4 _c0), combine: vec4(vec4 _c0, vec4 _c1), combineCoord: vec2(vec2 _st, vec4 _c0)
-//   inputs: [
-//     {
-//       name: 'freq',
-//       type: 'float', // 'float'   //, 'texture', 'vec4'
-//       default: 0.2
-//     },
-//     {
-//           name: 'sync',
-//           type: 'float',
-//           default: 0.1
-//         },
-//         {
-//           name: 'offset',
-//           type: 'float',
-//           default: 0.0
-//         }
-//   ],
-   //  glsl: `
-   //    vec2 st = _st;
-   //    float r = sin((st.x-offset*2/freq+time*sync)*freq)*0.5  + 0.5;
-   //    float g = sin((st.x+time*sync)*freq)*0.5 + 0.5;
-   //    float b = sin((st.x+offset/freq+time*sync)*freq)*0.5  + 0.5;
-   //    return vec4(r, g, b, 1.0);
-   // `
-// }
-
-// // generates glsl function:
-// `vec4 osc(vec2 _st, float freq, float sync, float offset){
-//  vec2 st = _st;
-//  float r = sin((st.x-offset*2/freq+time*sync)*freq)*0.5  + 0.5;
-//  float g = sin((st.x+time*sync)*freq)*0.5 + 0.5;
-//  float b = sin((st.x+offset/freq+time*sync)*freq)*0.5  + 0.5;
-//  return vec4(r, g, b, 1.0);
-// }`
-
-function processGlsl(obj) {
-  let t = typeLookup[obj.type]
-  if(t) {
-    let inputs = t.args.concat(obj.inputs);
-    let args = inputs.map((input) => `${input.type} ${input.name}`).join(', ')
-    // console.log('args are ', args)
-
-    let glslFunction =
-`
-  ${t.returnType} ${obj.name}(${args}) {
-      ${obj.glsl}
-  }
-`
-    // First input gets handled specially by generator
-    obj.inputs = inputs.slice(1);
-
-    return Object.assign({}, obj, { glsl: glslFunction})
-  } else {
-    console.warn(`type ${obj.type} not recognized`, obj, typeLookup)
-  }
-
 }
 
 export default GeneratorFactory

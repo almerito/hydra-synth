@@ -1,24 +1,25 @@
 
-import Output from './output.js'
+import WebGPUOutput from './webgpu-output.js'
 import loop from 'raf-loop'
 import Source from './hydra-source.js'
 import MouseTools from './lib/mouse.js'
 import Audio from './lib/audio.js'
 import VidRecorder from './lib/video-recorder.js'
 import ArrayUtils from './lib/array-utils.js'
-// import strudel from './lib/strudel.js'
 import Sandbox from './eval-sandbox.js'
 import Generator from './generator-factory.js'
-import regl from 'regl'
-// const window = global.window
-
-
+import { preloadNaga } from './shader-transpiler.js'
 
 const Mouse = MouseTools()
-// to do: add ability to pass in certain uniforms and transforms
+
+/**
+ * HydraRenderer - WebGPU-based visual synth
+ * Constructor is synchronous for backward compatibility
+ * WebGPU initialization happens lazily in background
+ */
 class HydraRenderer {
 
-  constructor ({
+  constructor({
     pb = null,
     width = 1280,
     height = 720,
@@ -36,15 +37,22 @@ class HydraRenderer {
     ArrayUtils.init()
 
     this.pb = pb
-
     this.width = width
     this.height = height
     this.renderAll = false
     this.detectAudio = detectAudio
 
+    // WebGPU state
+    this._gpuReady = false
+    this._gpuInitPromise = null
+    this._pendingRenders = []
+    this.adapter = null
+    this.device = null
+    this.gpuContext = null
+    this.gpuFormat = null
+
     this._initCanvas(canvas)
 
-    //global.window.test = 'hi'
     // object that contains all properties that will be made available on the global context and during local evaluation
     this.synth = {
       time: 0,
@@ -59,35 +67,28 @@ class HydraRenderer {
       mouse: Mouse,
       render: this._render.bind(this),
       setResolution: this.setResolution.bind(this),
-      update: (dt) => {},// user defined update function
-      afterUpdate: (dt) => {},// user defined function run after update
+      update: (dt) => { },// user defined update function
+      afterUpdate: (dt) => { },// user defined function run after update
       hush: this.hush.bind(this),
       tick: this.tick.bind(this)
     }
 
     if (makeGlobal) window.loadScript = this.loadScript
 
-
     this.timeSinceLastUpdate = 0
     this._time = 0 // for internal use, only to use for deciding when to render frames
 
     // only allow valid precision options
-    let precisionOptions = ['lowp','mediump','highp']
-    if(precision && precisionOptions.includes(precision.toLowerCase())) {
+    let precisionOptions = ['lowp', 'mediump', 'highp']
+    if (precision && precisionOptions.includes(precision.toLowerCase())) {
       this.precision = precision.toLowerCase()
-      //
-      // if(!precisionValid){
-      //   console.warn('[hydra-synth warning]\nConstructor was provided an invalid floating point precision value of "' + precision + '". Using default value of "mediump" instead.')
-      // }
     } else {
       let isIOS =
-    (/iPad|iPhone|iPod/.test(navigator.platform) ||
-      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) &&
-    !window.MSStream;
+        (/iPad|iPhone|iPod/.test(navigator.platform) ||
+          (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) &&
+        !window.MSStream;
       this.precision = isIOS ? 'highp' : 'mediump'
     }
-
-
 
     this.extendTransforms = extendTransforms
 
@@ -99,10 +100,18 @@ class HydraRenderer {
 
     this.generator = undefined
 
-    this._initRegl()
-    this._initOutputs(numOutputs)
-    this._initSources(numSources)
-    this._generateGlslTransforms()
+    // Start WebGPU initialization in background (non-blocking)
+    this._initWebGPU().then(() => {
+      this._initOutputs(numOutputs)
+      this._initSources(numSources)
+      this._generateGlslTransforms()
+      this._flushPendingRenders()
+    }).catch(err => {
+      console.error('[Hydra] WebGPU initialization failed:', err)
+    })
+
+    // Preload naga-wasm in background for GLSL transpilation
+    preloadNaga()
 
     this.synth.screencap = () => {
       this.saveFrame = true
@@ -111,7 +120,6 @@ class HydraRenderer {
     if (enableStreamCapture) {
       try {
         this.captureStream = this.canvas.captureStream(25)
-        // to do: enable capture stream of specific sources and outputs
         this.synth.vidRecorder = new VidRecorder(this.captureStream)
       } catch (e) {
         console.warn('[hydra-synth warning]\nnew MediaSource() is not currently supported on iOS.')
@@ -119,12 +127,74 @@ class HydraRenderer {
       }
     }
 
-    if(detectAudio) this._initAudio()
+    if (detectAudio) this._initAudio()
 
-    if(autoLoop) loop(this.tick.bind(this)).start()
+    if (autoLoop) loop(this.tick.bind(this)).start()
 
     // final argument is properties that the user can set, all others are treated as read-only
     this.sandbox = new Sandbox(this.synth, makeGlobal, ['speed', 'update', 'afterUpdate', 'bpm', 'fps'])
+  }
+
+  /**
+   * Initialize WebGPU - called in background, doesn't block constructor
+   */
+  async _initWebGPU() {
+    if (this._gpuInitPromise) return this._gpuInitPromise
+
+    this._gpuInitPromise = (async () => {
+      // Check WebGPU support
+      if (!navigator.gpu) {
+        throw new Error('WebGPU not supported in this browser')
+      }
+
+      console.log('[Hydra] Initializing WebGPU...')
+
+      // Request adapter
+      this.adapter = await navigator.gpu.requestAdapter({
+        powerPreference: 'high-performance'
+      })
+
+      if (!this.adapter) {
+        throw new Error('Failed to get WebGPU adapter')
+      }
+
+      // Request device
+      this.device = await this.adapter.requestDevice()
+
+      // Configure canvas context
+      this.gpuContext = this.canvas.getContext('webgpu')
+      this.gpuFormat = navigator.gpu.getPreferredCanvasFormat()
+
+      this.gpuContext.configure({
+        device: this.device,
+        format: this.gpuFormat,
+        alphaMode: 'premultiplied',
+      })
+
+      this._gpuReady = true
+      console.log('[Hydra] WebGPU initialized successfully')
+      console.log('[Hydra] Adapter:', this.adapter.info || 'info not available')
+
+      return this.device
+    })()
+
+    return this._gpuInitPromise
+  }
+
+  /**
+   * Execute any pending renders that were queued before GPU was ready
+   */
+  _flushPendingRenders() {
+    if (!this._gpuReady) return
+
+    while (this._pendingRenders.length > 0) {
+      const pendingFn = this._pendingRenders.shift()
+      try {
+        pendingFn()
+      } catch (e) {
+        console.error('[Hydra] Error executing pending render:', e)
+      }
+    }
   }
 
   eval(code) {
@@ -137,6 +207,11 @@ class HydraRenderer {
   }
 
   hush() {
+    if (!this._gpuReady) {
+      this._pendingRenders.push(() => this.hush())
+      return
+    }
+
     this.s.forEach((source) => {
       source.clear()
     })
@@ -144,48 +219,53 @@ class HydraRenderer {
       this.synth.solid(0, 0, 0, 0).out(output)
     })
     this.synth.render(this.o[0])
-    // this.synth.update = (dt) => {}
-    this.sandbox.set('update', (dt) => {})
-    this.sandbox.set('afterUpdate', (dt) => {})
+    this.sandbox.set('update', (dt) => { })
+    this.sandbox.set('afterUpdate', (dt) => { })
   }
 
   loadScript(url = "") {
-   const p = new Promise((res, rej) => {
-     var script = document.createElement("script");
-     script.onload = function () {
-       console.log(`loaded script ${url}`);
-       res();
-     };
-     script.onerror = (err) => {
-       console.log(`error loading script ${url}`, "log-error");
-       res()
-     };
-     script.src = url;
-     document.head.appendChild(script);
-   });
-   return p;
- }
-
-  setResolution(width, height) {
-  //  console.log(width, height)
-    this.canvas.width = width
-    this.canvas.height = height
-    this.width = width // is this necessary?
-    this.height = height // ?
-    this.sandbox.set('width', width)
-    this.sandbox.set('height', height)
-    console.log(this.width)
-    this.o.forEach((output) => {
-      output.resize(width, height)
-    })
-    this.s.forEach((source) => {
-      source.resize(width, height)
-    })
-    this.regl._refresh()
-     console.log(this.canvas.width)
+    const p = new Promise((res, rej) => {
+      var script = document.createElement("script");
+      script.onload = function () {
+        console.log(`loaded script ${url}`);
+        res();
+      };
+      script.onerror = (err) => {
+        console.log(`error loading script ${url}`, "log-error");
+        res()
+      };
+      script.src = url;
+      document.head.appendChild(script);
+    });
+    return p;
   }
 
-  canvasToImage (callback) {
+  setResolution(width, height) {
+    this.canvas.width = width
+    this.canvas.height = height
+    this.width = width
+    this.height = height
+    this.sandbox.set('width', width)
+    this.sandbox.set('height', height)
+
+    if (this._gpuReady) {
+      // Reconfigure WebGPU context
+      this.gpuContext.configure({
+        device: this.device,
+        format: this.gpuFormat,
+        alphaMode: 'premultiplied',
+      })
+
+      this.o.forEach((output) => {
+        output.resize(width, height)
+      })
+      this.s.forEach((source) => {
+        source.resize(width, height)
+      })
+    }
+  }
+
+  canvasToImage(callback) {
     const a = document.createElement('a')
     a.style.display = 'none'
 
@@ -193,15 +273,15 @@ class HydraRenderer {
     a.download = `hydra-${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}-${d.getHours()}.${d.getMinutes()}.${d.getSeconds()}.png`
     document.body.appendChild(a)
     var self = this
-    this.canvas.toBlob( (blob) => {
-        if(self.imageCallback){
-          self.imageCallback(blob)
-          delete self.imageCallback
-        } else {
-          a.href = URL.createObjectURL(blob)
-          console.log(a.href)
-          a.click()
-        }
+    this.canvas.toBlob((blob) => {
+      if (self.imageCallback) {
+        self.imageCallback(blob)
+        delete self.imageCallback
+      } else {
+        a.href = URL.createObjectURL(blob)
+        console.log(a.href)
+        a.click()
+      }
     }, 'image/png')
     setTimeout(() => {
       document.body.removeChild(a);
@@ -209,28 +289,16 @@ class HydraRenderer {
     }, 300);
   }
 
-  _initAudio () {
+  _initAudio() {
     const that = this
     this.synth.a = new Audio({
       numBins: 4,
       parentEl: this.canvas.parentNode
-      // changeListener: ({audio}) => {
-      //   that.a = audio.bins.map((_, index) =>
-      //     (scale = 1, offset = 0) => () => (audio.fft[index] * scale + offset)
-      //   )
-      //
-      //   if (that.makeGlobal) {
-      //     that.a.forEach((a, index) => {
-      //       const aname = `a${index}`
-      //       window[aname] = a
-      //     })
-      //   }
-      // }
     })
   }
 
   // create main output canvas and add to screen
-  _initCanvas (canvas) {
+  _initCanvas(canvas) {
     if (canvas) {
       this.canvas = canvas
       this.width = canvas.width
@@ -246,130 +314,19 @@ class HydraRenderer {
     }
   }
 
-  _initRegl () {
-    this.regl = regl({
-    //  profile: true,
-      canvas: this.canvas,
-      pixelRatio: 1//,
-      // extensions: [
-      //   'oes_texture_half_float',
-      //   'oes_texture_half_float_linear'
-      // ],
-      // optionalExtensions: [
-      //   'oes_texture_float',
-      //   'oes_texture_float_linear'
-     //]
-   })
-
-    // This clears the color buffer to black and the depth buffer to 1
-    this.regl.clear({
-      color: [0, 0, 0, 1]
-    })
-
-    this.renderAll = this.regl({
-      frag: `
-      precision ${this.precision} float;
-      varying vec2 uv;
-      uniform sampler2D tex0;
-      uniform sampler2D tex1;
-      uniform sampler2D tex2;
-      uniform sampler2D tex3;
-
-      void main () {
-        vec2 st = vec2(1.0 - uv.x, uv.y);
-        st*= vec2(2);
-        vec2 q = floor(st).xy*(vec2(2.0, 1.0));
-        int quad = int(q.x) + int(q.y);
-        st.x += step(1., mod(st.y,2.0));
-        st.y += step(1., mod(st.x,2.0));
-        st = fract(st);
-        if(quad==0){
-          gl_FragColor = texture2D(tex0, st);
-        } else if(quad==1){
-          gl_FragColor = texture2D(tex1, st);
-        } else if (quad==2){
-          gl_FragColor = texture2D(tex2, st);
-        } else {
-          gl_FragColor = texture2D(tex3, st);
-        }
-
-      }
-      `,
-      vert: `
-      precision ${this.precision} float;
-      attribute vec2 position;
-      varying vec2 uv;
-
-      void main () {
-        uv = position;
-        gl_Position = vec4(1.0 - 2.0 * position, 0, 1);
-      }`,
-      attributes: {
-        position: [
-          [-2, 0],
-          [0, -2],
-          [2, 2]
-        ]
-      },
-      uniforms: {
-        tex0: this.regl.prop('tex0'),
-        tex1: this.regl.prop('tex1'),
-        tex2: this.regl.prop('tex2'),
-        tex3: this.regl.prop('tex3')
-      },
-      count: 3,
-      depth: { enable: false }
-    })
-
-    this.renderFbo = this.regl({
-      frag: `
-      precision ${this.precision} float;
-      varying vec2 uv;
-      uniform vec2 resolution;
-      uniform sampler2D tex0;
-
-      void main () {
-        gl_FragColor = texture2D(tex0, vec2(1.0 - uv.x, uv.y));
-      }
-      `,
-      vert: `
-      precision ${this.precision} float;
-      attribute vec2 position;
-      varying vec2 uv;
-
-      void main () {
-        uv = position;
-        gl_Position = vec4(1.0 - 2.0 * position, 0, 1);
-      }`,
-      attributes: {
-        position: [
-          [-2, 0],
-          [0, -2],
-          [2, 2]
-        ]
-      },
-      uniforms: {
-        tex0: this.regl.prop('tex0'),
-        resolution: this.regl.prop('resolution')
-      },
-      count: 3,
-      depth: { enable: false }
-    })
-  }
-
-  _initOutputs (numOutputs) {
+  _initOutputs(numOutputs) {
     const self = this
     this.o = (Array(numOutputs)).fill().map((el, index) => {
-      var o = new Output({
-        regl: this.regl,
+      var o = new WebGPUOutput({
+        device: this.device,
+        context: this.gpuContext,
+        format: this.gpuFormat,
         width: this.width,
         height: this.height,
-        precision: this.precision,
         label: `o${index}`
       })
-    //  o.render()
       o.id = index
-      self.synth['o'+index] = o
+      self.synth['o' + index] = o
       return o
     })
 
@@ -377,41 +334,50 @@ class HydraRenderer {
     this.output = this.o[0]
   }
 
-  _initSources (numSources) {
+  _initSources(numSources) {
     this.s = []
-    for(var i = 0; i < numSources; i++) {
+    for (var i = 0; i < numSources; i++) {
       this.createSource(i)
     }
   }
 
-  createSource (i) {
-    let s = new Source({regl: this.regl, pb: this.pb, width: this.width, height: this.height, label: `s${i}`})
+  createSource(i) {
+    let s = new Source({
+      device: this.device,
+      pb: this.pb,
+      width: this.width,
+      height: this.height,
+      label: `s${i}`
+    })
     this.synth['s' + this.s.length] = s
     this.s.push(s)
     return s
   }
 
-  _generateGlslTransforms () {
+  _generateGlslTransforms() {
     var self = this
     this.generator = new Generator({
       defaultOutput: this.o[0],
-      defaultUniforms: this.o[0].uniforms,
+      defaultUniforms: this.o[0] ? this.o[0].uniforms : {},
       extendTransforms: this.extendTransforms,
-      changeListener: ({type, method, synth}) => {
-          if (type === 'add') {
-            self.synth[method] = synth.generators[method]
-            if(self.sandbox) self.sandbox.add(method)
-          } else if (type === 'remove') {
-            // what to do here? dangerously deleting window methods
-            //delete window[method]
-          }
-      //  }
+      changeListener: ({ type, method, synth }) => {
+        if (type === 'add') {
+          self.synth[method] = synth.generators[method]
+          if (self.sandbox) self.sandbox.add(method)
+        } else if (type === 'remove') {
+          // what to do here? dangerously deleting window methods
+        }
       }
     })
     this.synth.setFunction = this.generator.setFunction.bind(this.generator)
   }
 
-  _render (output) {
+  _render(output) {
+    if (!this._gpuReady) {
+      this._pendingRenders.push(() => this._render(output))
+      return
+    }
+
     if (output) {
       this.output = output
       this.isRenderingAll = false
@@ -421,64 +387,89 @@ class HydraRenderer {
   }
 
   // dt in ms
-  tick (dt, uniforms) {
+  tick(dt, uniforms) {
+    // Skip rendering if WebGPU not ready
+    if (!this._gpuReady) {
+      return
+    }
+
     try {
-    this.sandbox.tick()
-    if(this.detectAudio === true) this.synth.a.tick()
-  //  let updateInterval = 1000/this.synth.fps // ms
-    this.sandbox.set('time', this.synth.time += dt * 0.001 * this.synth.speed)
-    this.timeSinceLastUpdate += dt
-    if(!this.synth.fps || this.timeSinceLastUpdate >= 1000/this.synth.fps) {
-    //  console.log(1000/this.timeSinceLastUpdate)
-      this.synth.stats.fps = Math.ceil(1000/this.timeSinceLastUpdate)
-      if(this.synth.update) {
-        try { this.synth.update(this.timeSinceLastUpdate) } catch (e) { console.log(e) }
-      }
-    //  console.log(this.synth.speed, this.synth.time)
-      for (let i = 0; i < this.s.length; i++) {
-        this.s[i].tick(this.synth.time)
-      }
-    //  console.log(this.canvas.width, this.canvas.height)
-      const currentTime = this.synth.time;
-      for (let i = 0; i < this.o.length; i++) {
-        this.o[i].tick({
-          time: currentTime,
-          mouse: this.synth.mouse,
-          bpm: this.synth.bpm,
-          resolution: [this.canvas.width, this.canvas.height]
-        })
-      }
-      if (this.isRenderingAll) {
-        this.renderAll({
-          tex0: this.o[0].getCurrent(),
-          tex1: this.o[1].getCurrent(),
-          tex2: this.o[2].getCurrent(),
-          tex3: this.o[3].getCurrent(),
-          resolution: [this.canvas.width, this.canvas.height]
-        })
-      } else {
+      this.sandbox.tick()
+      if (this.detectAudio === true) this.synth.a.tick()
 
-        this.renderFbo({
-          tex0: this.output.getCurrent(),
-          resolution: [this.canvas.width, this.canvas.height]
-        })
+      this.sandbox.set('time', this.synth.time += dt * 0.001 * this.synth.speed)
+      this.timeSinceLastUpdate += dt
+
+      if (!this.synth.fps || this.timeSinceLastUpdate >= 1000 / this.synth.fps) {
+        this.synth.stats.fps = Math.ceil(1000 / this.timeSinceLastUpdate)
+
+        if (this.synth.update) {
+          try { this.synth.update(this.timeSinceLastUpdate) } catch (e) { console.log(e) }
+        }
+
+        for (let i = 0; i < this.s.length; i++) {
+          this.s[i].tick(this.synth.time)
+        }
+
+        const currentTime = this.synth.time;
+        for (let i = 0; i < this.o.length; i++) {
+          this.o[i].tick({
+            time: currentTime,
+            mouse: this.synth.mouse,
+            bpm: this.synth.bpm,
+            resolution: [this.canvas.width, this.canvas.height]
+          })
+        }
+
+        if (this.isRenderingAll) {
+          this._renderAll()
+        } else {
+          this._renderOutput()
+        }
+
+        if (this.synth.afterUpdate) {
+          try { this.synth.afterUpdate(this.timeSinceLastUpdate) } catch (e) { console.log(e) }
+        }
+        this.timeSinceLastUpdate = 0
       }
-      if(this.synth.afterUpdate) {
-        try { this.synth.afterUpdate(this.timeSinceLastUpdate) } catch (e) { console.log(e) }
+
+      if (this.saveFrame === true) {
+        this.canvasToImage()
+        this.saveFrame = false
       }
-      this.timeSinceLastUpdate = 0
+    } catch (e) {
+      console.warn('Error during tick():', e)
     }
-    if(this.saveFrame === true) {
-      this.canvasToImage()
-      this.saveFrame = false
-    }
-  } catch(e) {
-    console.warn('Error during tick():', e)
-  //  this.regl.poll()
   }
-}
 
+  /**
+   * Render all outputs in a 2x2 grid
+   */
+  _renderAll() {
+    // TODO: Implement WebGPU version of render all
+    // For now, just render the first output
+    this._renderOutput()
+  }
 
+  /**
+   * Render single output to screen
+   */
+  _renderOutput() {
+    if (!this.output) return
+
+    this.output.renderToScreen({
+      time: this.synth.time,
+      resolution: [this.canvas.width, this.canvas.height]
+    })
+  }
+
+  /**
+   * Wait for WebGPU to be ready
+   * @returns {Promise} Resolves when WebGPU is initialized
+   */
+  async ready() {
+    return this._gpuInitPromise
+  }
 }
 
 export default HydraRenderer
