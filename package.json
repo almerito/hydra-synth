@@ -1,24 +1,26 @@
 {
   "name": "hydra-synth",
-  "version": "1.4.0",
-  "description": "base synth for hydra-editor",
+  "version": "2.0.0",
+  "description": "base synth for hydra-editor - GLSL 3.0 ES compatible",
   "type": "module",
-  "main": "./src/index.js",
+  "main": "./dist/hydra-synth.umd.js",
+  "module": "./dist/hydra-synth.es.js",
   "exports": {
     ".": {
-      "import": "./src/hydra-synth.js",
-      "require": "./dist/hydra-synth.js"
+      "import": "./dist/hydra-synth.es.js",
+      "require": "./dist/hydra-synth.umd.js"
     },
     "./src/glsl/glsl-functions.js": {
       "import": "./src/glsl/glsl-functions.js",
       "require": "./src/glsl/glsl-functions.js"
     }
   },
-  "unpkg": "./dist/hydra-synth.js",
+  "unpkg": "./dist/hydra-synth.umd.js",
   "scripts": {
-    "dev-ssl": "budo ./dev/index.js --ssl --open --live --port 8000 --",
-    "dev": "budo ./dev/index.js --open --live --port 8000 -- -p esmify",
-    "build": "browserify ./src/index.js -p esmify --standalone Hydra > dist/hydra-synth.js"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "build:legacy": "browserify ./src/index.js -p esmify --standalone Hydra > dist/hydra-synth.js"
   },
   "repository": {
     "type": "git",
@@ -26,6 +28,8 @@
   },
   "keywords": [
     "webgl",
+    "webgl2",
+    "glsl3",
     "regl",
     "graphics",
     "livecoding",
@@ -44,7 +48,7 @@
   },
   "devDependencies": {
     "browserify": "^17.0.0",
-    "budo": "^11.8.4",
-    "esmify": "^2.1.1"
+    "esmify": "^2.1.1",
+    "vite": "^5.0.0"
   }
 }

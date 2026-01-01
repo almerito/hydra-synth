@@ -1,5 +1,36 @@
 # Changelog
 
+## [2.0.0] - 2026-01-01
+### Added
+- **GLSL 3.0 ES (WebGL 2.0) support** - Hydra now uses GLSL 3.0 ES as default for improved shader compatibility
+- **Automatic GLSL 1.0 to 3.0 conversion** - External plugins using `texture2D` are automatically converted in real-time
+- **`glsl3` parameter for shader functions** - Custom functions can now provide both `glsl` and `glsl3` versions
+- **New `glsl-converter.js` module** - Handles real-time GLSL 1.0 → 3.0 syntax conversion
+- **Vite.js build system** - Modern bundler replacing browserify/budo
+- **Root `index.html`** - Entry point for Vite dev server
+
+### Changed
+- **WebGL2 context by default** - `_initRegl()` now creates WebGL2 context, with WebGL1 fallback
+- **Shader syntax updated to GLSL 3.0**:
+  - `varying` → `in` (fragment) / `out` (vertex)
+  - `attribute` → `in` (vertex)
+  - `texture2D()` → `texture()`
+  - `gl_FragColor` → `fragColor` (custom output variable)
+  - Added `#version 300 es` directive to all shaders
+- **`src()` and `prev()` functions** - Added `glsl3` parameter with `texture()` syntax
+- **Package exports** - Now exports ES module (`hydra-synth.es.js`) and UMD (`hydra-synth.umd.js`)
+- **Version bumped to 2.0.0** - Major version for breaking WebGL2 changes
+- **Dev files converted to ES modules** - `dev/index.js` and `dev/examples.js`
+
+### Fixed
+- Code formatting and indentation consistency across source files
+
+### Build
+- `npm run dev` - Vite dev server on port 8000
+- `npm run build` - Production build to `dist/`
+- `npm run preview` - Preview production build
+- `npm run build:legacy` - Legacy browserify build (for compatibility)
+
 ## [1.4] - 2025-09-24
 ### Fixed
 - hard crashing when inputting invalid texture, fixed by @ojack and @ffd8

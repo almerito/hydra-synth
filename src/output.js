@@ -1,6 +1,6 @@
 //const transforms = require('./glsl-transforms.js')
 
-var Output = function ({ regl, precision, label = "", width, height}) {
+var Output = function ({ regl, precision, label = "", width, height }) {
   this.regl = regl
   this.precision = precision
   this.label = label
@@ -10,7 +10,7 @@ var Output = function ({ regl, precision, label = "", width, height}) {
     [2, 2]
   ])
 
-  this.draw = () => {}
+  this.draw = () => { }
   this.init()
   this.pingPongIndex = 0
 
@@ -26,14 +26,14 @@ var Output = function ({ regl, precision, label = "", width, height}) {
   }))
 
   // array containing render passes
-//  this.passes = []
+  //  this.passes = []
 }
 
-Output.prototype.resize = function(width, height) {
+Output.prototype.resize = function (width, height) {
   this.fbos.forEach((fbo) => {
     fbo.resize(width, height)
   })
-//  console.log(this)
+  //  console.log(this)
 }
 
 
@@ -42,26 +42,28 @@ Output.prototype.getCurrent = function () {
 }
 
 Output.prototype.getTexture = function () {
-   var index = this.pingPongIndex ? 0 : 1
+  var index = this.pingPongIndex ? 0 : 1
   return this.fbos[index]
 }
 
 Output.prototype.init = function () {
-//  console.log('clearing')
+  //  console.log('clearing')
   this.transformIndex = 0
-  this.fragHeader = `
+  this.fragHeader = `#version 300 es
   precision ${this.precision} float;
 
   uniform float time;
-  varying vec2 uv;
+  uniform vec2 resolution;
+  in vec2 uv;
+  out vec4 fragColor;
   `
 
   this.fragBody = ``
 
-  this.vert = `
+  this.vert = `#version 300 es
   precision ${this.precision} float;
-  attribute vec2 position;
-  varying vec2 uv;
+  in vec2 position;
+  out vec2 uv;
 
   void main () {
     uv = position;
@@ -83,7 +85,7 @@ Output.prototype.init = function () {
         vec4 c = vec4(0, 0, 0, 0);
         vec2 st = uv;
         ${this.fragBody}
-        gl_FragColor = c;
+        fragColor = c;
       }
   `
   return this
@@ -94,13 +96,14 @@ Output.prototype.render = function (passes) {
   let pass = passes[0]
   //console.log('pass', pass, this.pingPongIndex)
   var self = this
-      var uniforms = Object.assign(pass.uniforms, { prevBuffer:  () =>  {
-             //var index = this.pingPongIndex ? 0 : 1
-          //   var index = self.pingPong[(passIndex+1)%2]
-          //  console.log('ping pong', self.pingPongIndex)
-            return self.fbos[self.pingPongIndex]
-          }
-        })
+  var uniforms = Object.assign(pass.uniforms, {
+    prevBuffer: () => {
+      //var index = this.pingPongIndex ? 0 : 1
+      //   var index = self.pingPong[(passIndex+1)%2]
+      //  console.log('ping pong', self.pingPongIndex)
+      return self.fbos[self.pingPongIndex]
+    }
+  })
 
   self.draw = self.regl({
     frag: pass.frag,
@@ -117,7 +120,7 @@ Output.prototype.render = function (passes) {
 
 
 Output.prototype.tick = function (props) {
-//  console.log(props)
+  //  console.log(props)
   this.draw(props)
 }
 

@@ -1,37 +1,21 @@
+import Hydra from '../src/hydra-synth.js';
+import { fugitiveGeometry, exampleVideo, exampleResize, nonGlobalCanvas } from './examples.js';
 
-const Hydra = require('./../')
-// import Hydra from './../src/index.js'
-const loop = require('raf-loop')
-const { fugitiveGeometry, exampleVideo, exampleResize, nonGlobalCanvas } = require('./examples.js')
+function init() {
+    window.hydra = new Hydra({ detectAudio: false, makeGlobal: true });
 
-// console.log('HYDRA', Hydra)
-// const HydraShaders = require('./../shader-generator.js')
+    // Basic test - oscillator output
+    osc().out();
 
-function init () {
+    // Uncomment to test other examples:
+    // exampleVideo();
+    // exampleResize();
+    // nonGlobalCanvas();
 
-//   const canvas = document.createElement('canvas')
-//   canvas.style.backgroundColor = "#000"
-//   canvas.width = 800
-//   canvas.height = 200
-//   document.body.appendChild(canvas)
-//   // canvas.style.width = '100%'
-//   // canvas.style.height = '100%'
-// //  exampleCustomCanvas()
-
-
-
-window.hydra = new Hydra({detectAudio:false, makeGlobal: true})
-
-osc().out()
-// console.log(hydra)
-// window.hydra = hydra
-// // //osc().out()
-// exampleVideo()
-// exampleResize()
-//nonGlobalCanvas()
-
-//s0.initVideo("https://media.giphy.com/media/26ufplp8yheSKUE00/giphy.mp4", {})
-//src(s0).repeat().out()
+    // Test texture source (uncomment to test):
+    // s0.initVideo("https://media.giphy.com/media/26ufplp8yheSKUE00/giphy.mp4", {});
+    // src(s0).repeat().out();
 }
 
-window.onload = init
+window.onload = init;
+

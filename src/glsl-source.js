@@ -14,16 +14,16 @@ var GlslSource = function (obj) {
   return this
 }
 
-GlslSource.prototype.addTransform = function (obj)  {
-    this.transforms.push(obj)
+GlslSource.prototype.addTransform = function (obj) {
+  this.transforms.push(obj)
 }
 
 GlslSource.prototype.out = function (_output) {
   var output = _output || this.defaultOutput
- 
- // output.renderPasses(glsl)
-  if(output) try{
-     var glsl = this.glsl(output)
+
+  // output.renderPasses(glsl)
+  if (output) try {
+    var glsl = this.glsl(output)
     this.synth.currentFunctions = []
     output.render(glsl)
   } catch (error) {
@@ -35,12 +35,12 @@ GlslSource.prototype.glsl = function () {
   //var output = _output || this.defaultOutput
   var self = this
   // uniforms included in all shaders
-//  this.defaultUniforms = output.uniforms
+  //  this.defaultUniforms = output.uniforms
   var passes = []
   var transforms = []
-//  console.log('output', output)
+  //  console.log('output', output)
   this.transforms.forEach((transform) => {
-    if(transform.transform.type === 'renderpass'){
+    if (transform.transform.type === 'renderpass') {
       // if (transforms.length > 0) passes.push(this.compile(transforms, output))
       // transforms = []
       // var uniforms = {}
@@ -68,7 +68,7 @@ GlslSource.prototype.compile = function (transforms) {
   var uniforms = {}
   shaderInfo.uniforms.forEach((uniform) => { uniforms[uniform.name] = uniform.value })
 
-  var frag = `
+  var frag = `#version 300 es
   precision ${this.defaultOutput.precision} float;
   ${Object.values(shaderInfo.uniforms).map((uniform) => {
     let type = uniform.type
@@ -82,11 +82,12 @@ GlslSource.prototype.compile = function (transforms) {
   }).join('')}
   uniform float time;
   uniform vec2 resolution;
-  varying vec2 uv;
+  in vec2 uv;
+  out vec4 fragColor;
   uniform sampler2D prevBuffer;
 
   ${Object.values(utilityGlsl).map((transform) => {
-  //  console.log(transform.glsl)
+    //  console.log(transform.glsl)
     return `
             ${transform.glsl}
           `
@@ -102,7 +103,7 @@ GlslSource.prototype.compile = function (transforms) {
     vec2 st = gl_FragCoord.xy/resolution.xy;
 
     ${shaderInfo.fragColor}
-    gl_FragColor = c;
+    fragColor = c;
   }
   `
 

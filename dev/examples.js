@@ -1,12 +1,11 @@
-const Hydra = require('../src/index.js')
+import Hydra from '../src/hydra-synth.js';
 
-
-module.exports = {
-  fugitiveGeometry: fugitiveGeometry,
-  exampleVideo: exampleVideo,
-  exampleResize: exampleResize,
-  nonGlobalCanvas: nonGlobalCanvas
-}
+export {
+  fugitiveGeometry,
+  exampleVideo,
+  exampleResize,
+  nonGlobalCanvas
+};
 
 function exampleResize() {
   window.addEventListener('resize', () => {
