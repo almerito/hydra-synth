@@ -106,6 +106,23 @@ setFunction({
 - ❌ CANNOT modify sampling coordinates
 - ❌ CANNOT access original texture
 
+> [!TIP]
+> **`src` vs `color` for Texture Processing Effects**
+> 
+> For effects that process a texture (blur, chromatic aberration, distortion), you might think `type: 'src'` with `sampler2D` input is required. However, **both approaches work**:
+> 
+> | Type | Usage Pattern | Syntax |
+> |------|--------------|--------|
+> | `color` | Chainable | `src(s0).chromaGlitch(0.1).out(o0)` |
+> | `src` | Standalone | `chromaGlitch(s0, 0.1).out(o0)` |
+> 
+> **Recommendation**: Use `type: 'color'` for post-processing effects because:
+> - More idiomatic Hydra style
+> - Easily chainable: `src(s0).blur().chromaGlitch().out(o0)`
+> - Users don't need to think about passing the texture
+> 
+> The key insight: if your `color` shader has a `sampler2D` input, you can still sample it at different coordinates - `_c0` is simply ignored.
+
 ---
 
 ### 3. `coord` - Coordinates

@@ -1,6 +1,7 @@
 import IRenderEngine from './IRenderEngine.js'
 import glslFunctions from '../shaders/basic-functions.js'
 import utilityFunctions from '../shaders/utility-functions.js'
+import generateWgsl from './wgsl-generator.js'
 
 /**
  * WGSLEngine - WebGPU render engine with WGSL shader support
@@ -10,6 +11,7 @@ import utilityFunctions from '../shaders/utility-functions.js'
 class WGSLEngine extends IRenderEngine {
     constructor(options = {}) {
         super(options)
+        this.engineId = Math.floor(Math.random() * 1000000) // Unique ID for zombie detection
         this.device = null
         this.context = null
         this.format = null
@@ -20,44 +22,38 @@ class WGSLEngine extends IRenderEngine {
         this.uniformBuffer = null
         this.positionBuffer = null
         this.initialized = false
+
+        // Track active resources for lifecycle management and resurrection
+        this._activeFramebuffers = new Set()
+        this._activeTextures = new Set()
     }
 
     // ============================================================
     // Lifecycle Methods
     // ============================================================
 
-    /**
-     * Synchronous init that starts async initialization in background.
-     * Returns immediately (like other engines) but device won't be ready yet.
-     * Use _ensureReady() before operations that need the device.
-     */
     init() {
         if (!navigator.gpu) {
             console.error('[WGSLEngine] WebGPU is not supported in this browser')
             this._initError = new Error('WebGPU is not supported in this browser')
             return this
         }
-
-        // Start async init, store promise for sync checking
         this._initPromise = this._asyncInit().catch(err => {
             console.error('[WGSLEngine] Initialization failed:', err)
             this._initError = err
         })
-
         return this
     }
 
-    /**
-     * Internal async initialization - do not call directly
-     */
     async _asyncInit() {
         const adapter = await navigator.gpu.requestAdapter()
-        if (!adapter) {
-            throw new Error('Failed to get WebGPU adapter')
-        }
+        if (!adapter) throw new Error('Failed to get WebGPU adapter')
 
         this.device = await adapter.requestDevice()
         this.context = this.canvas.getContext('webgpu')
+        // Tag canvas with current engine ID to detect zombies
+        this.canvas._wgpu_engine_id = this.engineId
+
         this.format = navigator.gpu.getPreferredCanvasFormat()
 
         this.context.configure({
@@ -66,26 +62,20 @@ class WGSLEngine extends IRenderEngine {
             alphaMode: 'premultiplied'
         })
 
-        // Create position buffer for fullscreen quad
-        const positions = new Float32Array([
-            -1, -1,
-            1, -1,
-            -1, 1,
-            -1, 1,
-            1, -1,
-            1, 1
-        ])
+        const positions = new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1])
         this.positionBuffer = this.device.createBuffer({
             size: positions.byteLength,
             usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
         })
         this.device.queue.writeBuffer(this.positionBuffer, 0, positions)
 
-        // Create uniform buffer for time, resolution, etc.
         this.uniformBuffer = this.device.createBuffer({
             size: 32, // time(4) + resolution(8) + padding
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
         })
+
+        // Hydrate/Resurrect all active resources
+        this._initPendingResources()
 
         this.initialized = true
         console.log('[WGSLEngine] WebGPU initialized successfully')
@@ -93,41 +83,86 @@ class WGSLEngine extends IRenderEngine {
         return this
     }
 
-    /**
-     * Wait for device to be ready. Call before any operation that needs device.
-     * Returns a Promise that resolves when ready.
-     */
-    async _ensureReady() {
-        if (this._initError) {
-            throw this._initError
-        }
-        if (!this.initialized && this._initPromise) {
-            await this._initPromise
-        }
-        if (this._initError) {
-            throw this._initError
-        }
-    }
+    _initPendingResources() {
+        // Resurrect Framebuffers
+        this._activeFramebuffers.forEach(({ fbo, options }) => {
+            // Re-create resources for valid fbo objects
+            if (fbo.texture) fbo.texture.destroy() // cleanup if random leftovers
 
-    /**
-     * Check if device is ready (sync check, for guards)
-     */
-    isReady() {
-        return this.initialized && !this._initError
+            const { width, height } = options
+            const texture = this.device.createTexture({
+                size: [width, height, 1],
+                format: this.format,
+                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST
+            })
+            fbo.texture = texture
+            fbo.view = texture.createView()
+        })
+
+        // Resurrect Textures
+        this._activeTextures.forEach(({ texWrapper, options }) => {
+            if (texWrapper._texture) texWrapper._texture.destroy()
+
+            const { width, height, shape, data } = options
+            const texWidth = width || (shape && shape[0]) || 1
+            const texHeight = height || (shape && shape[1]) || 1
+
+            const texture = this.device.createTexture({
+                size: [texWidth, texHeight, 1],
+                format: 'rgba8unorm',
+                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
+            })
+            const sampler = this.device.createSampler({
+                magFilter: 'nearest',
+                minFilter: 'nearest'
+            })
+
+            texWrapper._texture = texture
+            texWrapper.view = texture.createView()
+            texWrapper.sampler = sampler
+
+            // Re-upload data if possible (e.g. from static options)
+            // Note: If data was a stream or dynamic, it needs to be updated by the user/engine loop separately
+            if (data && (data instanceof HTMLVideoElement || data instanceof HTMLImageElement || data instanceof HTMLCanvasElement)) {
+                createImageBitmap(data).then(imageBitmap => {
+                    this.device.queue.copyExternalImageToTexture(
+                        { source: imageBitmap },
+                        { texture: texture },
+                        [imageBitmap.width, imageBitmap.height]
+                    )
+                })
+            }
+        })
     }
 
     destroy() {
+        // Clear GPU resources but KEEP tracking objects to support resurrection on re-init
+        this.initialized = false // Stop rendering immediately
+
         if (this.device) {
             this.pipelines.clear()
             this.bindGroupLayouts.clear()
-            this.textures.forEach((tex) => tex.destroy())
-            this.buffers.forEach((buf) => buf.destroy())
-            this.textures.clear()
-            this.buffers.clear()
+
+            // Destroy active resources
+            this._activeFramebuffers.forEach(({ fbo }) => {
+                if (fbo.texture) fbo.texture.destroy()
+                fbo.texture = null
+                fbo.view = null
+            })
+
+            this._activeTextures.forEach(({ texWrapper }) => {
+                if (texWrapper._texture) texWrapper._texture.destroy()
+                texWrapper._texture = null
+                texWrapper.view = null
+            })
+
             if (this.positionBuffer) this.positionBuffer.destroy()
             if (this.uniformBuffer) this.uniformBuffer.destroy()
+
             this.device = null
             this.context = null
+            this.uniformBuffer = null
+            this.positionBuffer = null
         }
     }
 
@@ -135,37 +170,18 @@ class WGSLEngine extends IRenderEngine {
         // WebGPU doesn't need explicit refresh
     }
 
-    // ============================================================
-    // Resource Creation Methods
-    // ============================================================
-
     createFramebuffer(options) {
-        // Guard: return stub if device not ready
-        if (!this.device) {
-            return {
-                texture: null,
-                view: null,
-                width: options.width,
-                height: options.height,
-                resize: () => { },
-                destroy: () => { }
-            }
-        }
-        const { width, height } = options
-
-        const texture = this.device.createTexture({
-            size: [width, height, 1],
-            format: this.format,
-            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST
-        })
-
+        // Create FBO object structure immediately
         const fbo = {
-            texture,
-            view: texture.createView(),
-            width,
-            height,
+            texture: null,
+            view: null,
+            width: options.width,
+            height: options.height,
             resize: (newWidth, newHeight) => {
-                texture.destroy()
+                options.width = newWidth
+                options.height = newHeight
+                if (!this.device) return
+                if (fbo.texture) fbo.texture.destroy()
                 const newTexture = this.device.createTexture({
                     size: [newWidth, newHeight, 1],
                     format: this.format,
@@ -175,51 +191,47 @@ class WGSLEngine extends IRenderEngine {
                 fbo.view = newTexture.createView()
                 fbo.width = newWidth
                 fbo.height = newHeight
+            },
+            destroy: () => {
+                if (fbo.texture) fbo.texture.destroy()
+                this._activeFramebuffers.delete(entry)
             }
+        }
+
+        const entry = { fbo, options }
+        this._activeFramebuffers.add(entry)
+
+        // If device ready, populate it
+        if (this.device) {
+            const { width, height } = options
+            const texture = this.device.createTexture({
+                size: [width, height, 1],
+                format: this.format,
+                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST
+            })
+            fbo.texture = texture
+            fbo.view = texture.createView()
         }
 
         return fbo
     }
 
     createTexture(options) {
-        // Guard: return stub if device not ready
-        if (!this.device) {
-            return {
-                _texture: null,
-                view: null,
-                sampler: null,
-                width: options.width || 1,
-                height: options.height || 1,
-                resize: () => { },
-                destroy: () => { },
-                get texture() { return this._texture }
-            }
-        }
-        const { width, height, shape, data } = options
-
-        const texWidth = width || (shape && shape[0]) || 1
-        const texHeight = height || (shape && shape[1]) || 1
-
-        const texture = this.device.createTexture({
-            size: [texWidth, texHeight, 1],
-            format: 'rgba8unorm',
-            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
-        })
-
-        // Create sampler
-        const sampler = this.device.createSampler({
-            magFilter: 'nearest',
-            minFilter: 'nearest'
-        })
-
+        // Create wrapper structure immediately
         const texWrapper = {
-            _texture: texture,
-            view: texture.createView(),
-            sampler,
-            width: texWidth,
-            height: texHeight,
+            _texture: null,
+            view: null,
+            sampler: null,
+            width: options.width || (options.shape && options.shape[0]) || 1,
+            height: options.height || (options.shape && options.shape[1]) || 1,
             resize: (newWidth, newHeight) => {
-                texture.destroy()
+                options.width = newWidth
+                options.height = newHeight
+                texWrapper.width = newWidth
+                texWrapper.height = newHeight
+                if (!this.device) return
+                if (texWrapper._texture) texWrapper._texture.destroy()
+
                 const newTexture = this.device.createTexture({
                     size: [newWidth, newHeight, 1],
                     format: 'rgba8unorm',
@@ -227,10 +239,11 @@ class WGSLEngine extends IRenderEngine {
                 })
                 texWrapper._texture = newTexture
                 texWrapper.view = newTexture.createView()
-                texWrapper.width = newWidth
-                texWrapper.height = newHeight
             },
             subimage: async (source) => {
+                // If device not ready, changing source is tricky to cache for subimage, 
+                // but typically subimage is called in render loop.
+                if (!this.device) return
                 if (source instanceof HTMLVideoElement || source instanceof HTMLImageElement || source instanceof HTMLCanvasElement) {
                     const imageBitmap = await createImageBitmap(source)
                     this.device.queue.copyExternalImageToTexture(
@@ -240,18 +253,49 @@ class WGSLEngine extends IRenderEngine {
                     )
                 }
             },
-            get texture() { return texture }
+            destroy: () => {
+                if (texWrapper._texture) texWrapper._texture.destroy()
+                this._activeTextures.delete(entry)
+            },
+            get texture() { return this._texture }
         }
 
-        // If data is provided, copy it to the texture
-        if (data && (data instanceof HTMLVideoElement || data instanceof HTMLImageElement || data instanceof HTMLCanvasElement)) {
-            createImageBitmap(data).then(imageBitmap => {
-                this.device.queue.copyExternalImageToTexture(
-                    { source: imageBitmap },
-                    { texture: texture },
-                    [imageBitmap.width, imageBitmap.height]
-                )
+        const entry = { texWrapper, options }
+        this._activeTextures.add(entry)
+
+        // If device ready, populate it
+        if (this.device) {
+            const { width, height, shape, data } = options
+            const texWidth = width || (shape && shape[0]) || 1
+            const texHeight = height || (shape && shape[1]) || 1
+
+            const texture = this.device.createTexture({
+                size: [texWidth, texHeight, 1],
+                format: 'rgba8unorm',
+                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
             })
+
+            const sampler = this.device.createSampler({
+                magFilter: 'nearest',
+                minFilter: 'nearest'
+            })
+
+            texWrapper._texture = texture
+            texWrapper.view = texture.createView()
+            texWrapper.sampler = sampler
+
+            if (data && this.device) {
+                // Handle initial data upload
+                if (data instanceof HTMLVideoElement || data instanceof HTMLImageElement || data instanceof HTMLCanvasElement) {
+                    createImageBitmap(data).then(imageBitmap => {
+                        this.device.queue.copyExternalImageToTexture(
+                            { source: imageBitmap },
+                            { texture: texture },
+                            [imageBitmap.width, imageBitmap.height]
+                        )
+                    })
+                }
+            }
         }
 
         return texWrapper
@@ -276,60 +320,65 @@ class WGSLEngine extends IRenderEngine {
     // ============================================================
 
     createDrawCommand(options) {
-        // Guard: return no-op function if device not ready
-        if (!this.device) {
-            console.warn('[WGSLEngine] createDrawCommand called before device ready, returning no-op')
-            return () => { } // Return no-op function
-        }
         const { frag, vert, uniforms, count, framebuffer } = options
-        const self = this
 
-        // Create shader module
-        const shaderCode = `
+        let pipeline = null
+        let shaderModule = null
+
+        // Return draw function immediately (lazy init)
+        return (props) => {
+            // Skip if device not fully initialized or buffers missing
+            if (!this.initialized || !this.device || !this.context || !this.uniformBuffer) return
+
+            // Initialize pipeline on first valid run
+            if (!pipeline) {
+                try {
+                    const shaderCode = `
 ${vert}
 
 ${frag}
 `
-        let shaderModule
-        try {
-            shaderModule = this.device.createShaderModule({
-                code: shaderCode
-            })
-        } catch (e) {
-            console.error('Shader compilation error:', e)
-            throw e
-        }
+                    shaderModule = this.device.createShaderModule({
+                        code: shaderCode
+                    })
 
-        // Create pipeline
-        const pipeline = this.device.createRenderPipeline({
-            layout: 'auto',
-            vertex: {
-                module: shaderModule,
-                entryPoint: 'vs_main',
-                buffers: [{
-                    arrayStride: 8,
-                    attributes: [{
-                        format: 'float32x2',
-                        offset: 0,
-                        shaderLocation: 0
-                    }]
-                }]
-            },
-            fragment: {
-                module: shaderModule,
-                entryPoint: 'fs_main',
-                targets: [{
-                    format: this.format
-                }]
-            },
-            primitive: {
-                topology: 'triangle-list'
+                    pipeline = this.device.createRenderPipeline({
+                        layout: 'auto',
+                        vertex: {
+                            module: shaderModule,
+                            entryPoint: 'vs_main',
+                            buffers: [{
+                                arrayStride: 8,
+                                attributes: [{
+                                    format: 'float32x2',
+                                    offset: 0,
+                                    shaderLocation: 0
+                                }]
+                            }]
+                        },
+                        fragment: {
+                            module: shaderModule,
+                            entryPoint: 'fs_main',
+                            targets: [{
+                                format: this.format
+                            }]
+                        },
+                        primitive: {
+                            topology: 'triangle-list'
+                        }
+                    })
+                } catch (e) {
+                    console.error('[WGSLEngine] Shader compilation error:', e)
+                    // Prevent retrying every frame if compilation fails
+                    pipeline = 'error'
+                    return
+                }
             }
-        })
 
-        // Return draw function
-        return (props) => {
+            if (pipeline === 'error') return
+
             // Update uniform buffer
+            // Note: In a real implementation, we should handle dynamic uniforms here
             const uniformData = new Float32Array([
                 props.time || 0,
                 0, // padding
@@ -343,24 +392,55 @@ ${frag}
             if (framebuffer) {
                 const fbo = typeof framebuffer === 'function' ? framebuffer() : framebuffer
                 targetView = fbo.view
-                // Skip render if framebuffer is stub (device not ready yet)
+                // Skip render if framebuffer texture view is missing
                 if (!targetView) {
                     return
                 }
             } else {
-                targetView = this.context.getCurrentTexture().createView()
+                try {
+                    targetView = this.context.getCurrentTexture().createView()
+                } catch (e) {
+                    // console.warn('[WGSLEngine] Context lost or invalid, skipping frame')
+                    return
+                }
             }
 
-            // Skip if device not ready
-            if (!this.device) {
-                return
+            const entries = [{
+                binding: 0,
+                resource: { buffer: this.uniformBuffer }
+            }]
+
+            // Handle tex0 for default shaders (and potentially src() if mapped similarly)
+            // TODO: systematic handling of multiple textures based on shader reflection or options
+            if (props.tex0) {
+                // Determine view: prefer .view property (wrapper), else assume it's a direct view
+                let texResource = props.tex0.view
+                if (!texResource && props.tex0.constructor && props.tex0.constructor.name === 'GPUTextureView') {
+                    texResource = props.tex0
+                }
+
+                if (texResource) {
+                    entries.push({
+                        binding: 1,
+                        resource: texResource
+                    })
+                    entries.push({
+                        binding: 2,
+                        resource: props.tex0.sampler || this.device.createSampler({
+                            magFilter: 'linear',
+                            minFilter: 'linear'
+                        })
+                    })
+                } else {
+                    // Log warning if texture present but invalid view
+                    // console.warn('WGSLEngine: Invalid texture prop', props.tex0)
+                    // Do not add entries - this will likely cause layout mismatch error but better than hard crash
+                }
             }
+
             const bindGroup = this.device.createBindGroup({
                 layout: pipeline.getBindGroupLayout(0),
-                entries: [{
-                    binding: 0,
-                    resource: { buffer: this.uniformBuffer }
-                }]
+                entries: entries
             })
 
             // Create command encoder
@@ -376,8 +456,11 @@ ${frag}
 
             renderPass.setPipeline(pipeline)
             renderPass.setBindGroup(0, bindGroup)
-            renderPass.setVertexBuffer(0, this.positionBuffer)
-            renderPass.draw(6)
+            // Warning: positionBuffer might be null if _ensureReady logic race condition happens, but checks above should prevent it
+            if (this.positionBuffer) {
+                renderPass.setVertexBuffer(0, this.positionBuffer)
+                renderPass.draw(6)
+            }
             renderPass.end()
 
             this.device.queue.submit([commandEncoder.finish()])
@@ -419,6 +502,10 @@ ${frag}
         return utilityFunctions
     }
 
+    generateShader(transforms) {
+        return generateWgsl(transforms)
+    }
+
     // Helper to get shader code - uses wgsl property if available
     getShaderCode(shader) {
         if (shader.wgsl) {
@@ -446,17 +533,20 @@ struct Uniforms {
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 
 ${Object.values(this.getUtilityFunctions()).map((transform) => {
-            return transform.wgsl
+            return transform.wgsl.replace(/\b(uniforms\.)?time\b/g, 'uniforms.time').replace(/\b(uniforms\.)?resolution\b/g, 'uniforms.resolution')
         }).join('\n')}
 
 ${shaderInfo.glslFunctions.map((transform) => {
-            return transform.transform.wgsl || ''
+            return (transform.transform.wgsl || '').replace(/\b(uniforms\.)?time\b/g, 'uniforms.time').replace(/\b(uniforms\.)?resolution\b/g, 'uniforms.resolution')
         }).join('\n')}
 
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     let st = uv;
-    ${shaderInfo.fragColor.replace('gl_FragColor', 'return').replace('vec4', 'vec4<f32>')}
+    ${shaderInfo.fragColor}
+    // Optimization guard: ensure uniforms are used
+    let _keep = uniforms.time * 0.0000001;
+    return c + vec4<f32>(_keep);
 }
 `
 
@@ -508,7 +598,9 @@ struct Uniforms {
 
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-    return textureSample(tex0, tex0Sampler, uv);
+    // Force usage of uniforms to prevent optimization removing binding 0
+    let _dummy = uniforms.time * 0.000001;
+    return textureSample(tex0, tex0Sampler, uv) + vec4<f32>(_dummy);
 }`
     }
 
@@ -526,7 +618,9 @@ struct Uniforms {
 
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-    return textureSample(tex0, tex0Sampler, vec2<f32>(1.0 - uv.x, uv.y));
+    // Force usage of uniforms to prevent optimization removing binding 0
+    let _dummy = uniforms.time * 0.000001;
+    return textureSample(tex0, tex0Sampler, vec2<f32>(1.0 - uv.x, uv.y)) + vec4<f32>(_dummy);
 }`
     }
 }

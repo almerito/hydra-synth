@@ -2,6 +2,7 @@ import IRenderEngine from './IRenderEngine.js'
 import regl from 'regl'
 import glslFunctions from '../shaders/basic-functions.js'
 import utilityFunctions from '../shaders/utility-functions.js'
+import generateGlsl from '../generate-glsl.js'
 
 /**
  * ReglEngine - WebGL1 render engine using regl library
@@ -90,6 +91,10 @@ class ReglEngine extends IRenderEngine {
 
     getUtilityFunctions() {
         return utilityFunctions
+    }
+
+    generateShader(transforms) {
+        return generateGlsl(transforms)
     }
 
     compileShader(options) {

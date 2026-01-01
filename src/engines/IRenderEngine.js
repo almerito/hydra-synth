@@ -151,6 +151,16 @@ class IRenderEngine {
   }
 
   /**
+   * Generate shader code from transforms
+   * @abstract
+   * @param {Array} transforms - List of transform objects
+   * @returns {Object} Shader info object { fragColor, uniforms, glslFunctions }
+   */
+  generateShader(transforms) {
+    throw new Error('Method generateShader() must be implemented by subclass')
+  }
+
+  /**
    * Compile shader source for a transform chain
    * @abstract
    * @param {Object} options - Compilation options

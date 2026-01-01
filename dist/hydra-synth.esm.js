@@ -11678,7 +11678,12 @@ GlslSource.prototype.glsl = function() {
   return passes;
 };
 GlslSource.prototype.compile = function(transforms) {
-  var shaderInfo = generate_glsl_default(transforms, this.synth);
+  var shaderInfo;
+  if (this.engine && this.engine.generateShader) {
+    shaderInfo = this.engine.generateShader(transforms);
+  } else {
+    shaderInfo = generate_glsl_default(transforms, this.synth);
+  }
   var uniforms = {};
   shaderInfo.uniforms.forEach((uniform) => {
     uniforms[uniform.name] = uniform.value;
@@ -12601,9 +12606,31 @@ function processGlsl(obj) {
   }
 `;
     }
+    let wgslFunction = void 0;
+    if (obj.wgsl) {
+      const wgslTypeMap = {
+        "vec4": "vec4<f32>",
+        "vec3": "vec3<f32>",
+        "vec2": "vec2<f32>",
+        "float": "f32",
+        "int": "i32",
+        "sampler2D": "texture_2d<f32>"
+      };
+      const wgslReturnType = wgslTypeMap[t.returnType] || t.returnType;
+      const wgslArgs = inputs.map((input) => {
+        const wgslType = wgslTypeMap[input.type] || input.type;
+        return `${input.name}: ${wgslType}`;
+      }).join(", ");
+      wgslFunction = `
+fn ${obj.name}(${wgslArgs}) -> ${wgslReturnType} {
+    ${obj.wgsl}
+}
+`;
+    }
     const processedInputs = inputs.slice(1);
     let result = Object.assign({}, obj, { glsl: glslFunction, inputs: processedInputs });
     if (glsl3Function) result.glsl3 = glsl3Function;
+    if (wgslFunction) result.wgsl = wgslFunction;
     return result;
   } else {
     console.warn(`type ${obj.type} not recognized`, obj, typeLookup);
@@ -12744,6 +12771,15 @@ var IRenderEngine = class _IRenderEngine {
     throw new Error("Method getUtilityFunctions() must be implemented by subclass");
   }
   /**
+   * Generate shader code from transforms
+   * @abstract
+   * @param {Array} transforms - List of transform objects
+   * @returns {Object} Shader info object { fragColor, uniforms, glslFunctions }
+   */
+  generateShader(transforms) {
+    throw new Error("Method generateShader() must be implemented by subclass");
+  }
+  /**
    * Compile shader source for a transform chain
    * @abstract
    * @param {Object} options - Compilation options
@@ -12838,6 +12874,9 @@ var ReglEngine = class extends IRenderEngine_default {
   }
   getUtilityFunctions() {
     return utility_functions_default;
+  }
+  generateShader(transforms) {
+    return generate_glsl_default(transforms);
   }
   compileShader(options) {
     const { shaderInfo, defaultUniforms } = options;
@@ -13215,6 +13254,9 @@ var WebGL2Engine = class extends IRenderEngine_default {
   getUtilityFunctions() {
     return utility_functions_default;
   }
+  generateShader(transforms) {
+    return generate_glsl_default(transforms);
+  }
   // Helper to get shader code with GLSL3 conversion
   getShaderCode(shader) {
     if (shader.glsl3) {
@@ -13332,6 +13374,101 @@ void main () {
 };
 var WebGL2Engine_default = WebGL2Engine;
 
+// src/engines/wgsl-generator.js
+function wgsl_generator_default(transforms) {
+  var shaderParams = {
+    uniforms: [],
+    // list of uniforms used in shader
+    glslFunctions: [],
+    // list of functions used in shader (actually WGSL functions in this case)
+    fragColor: ""
+  };
+  var gen = generateWgsl(transforms, shaderParams)("c", "st");
+  shaderParams.fragColor = gen;
+  let uniforms = {};
+  shaderParams.uniforms.forEach((uniform) => uniforms[uniform.name] = uniform);
+  shaderParams.uniforms = Object.values(uniforms);
+  return shaderParams;
+}
+function generateInputName2(v, index) {
+  return `${v}_i${index}`;
+}
+function generateWgsl(transforms, shaderParams) {
+  var generator = (c, uv) => "";
+  transforms.forEach((transform, i) => {
+    let inputs = formatArguments(transform, shaderParams.uniforms.length);
+    inputs.forEach((input) => {
+      if (input.isUniform) shaderParams.uniforms.push(input);
+    });
+    if (!contains2(transform, shaderParams.glslFunctions)) shaderParams.glslFunctions.push(transform);
+    var prev = generator;
+    if (transform.transform.type === "src") {
+      generator = (c, uv) => `${generateInputs2(inputs, shaderParams)(`${c}${i}`, uv)}
+         var ${c}: vec4<f32> = ${shaderString2(`${c}${i}`, uv, transform.name, inputs)};`;
+    } else if (transform.transform.type === "color") {
+      generator = (c, uv) => `${generateInputs2(inputs, shaderParams)(`${c}${i}`, uv)}
+         ${prev(c, uv)}
+         ${c} = ${shaderString2(`${c}${i}`, `${c}`, transform.name, inputs)};`;
+    } else if (transform.transform.type === "coord") {
+      generator = (c, uv) => `${generateInputs2(inputs, shaderParams)(`${c}${i}`, uv)}
+         ${uv} = ${shaderString2(`${c}${i}`, `${uv}`, transform.name, inputs)};
+         ${prev(c, uv)}`;
+    } else if (transform.transform.type === "combine") {
+      generator = (c, uv) => (
+        // combining two generated shader strings (i.e. for blend, mult, add funtions)
+        `${generateInputs2(inputs, shaderParams)(`${c}${i}`, uv)}
+         ${prev(c, uv)}
+         ${c} = ${shaderString2(`${c}${i}`, `${c}`, transform.name, inputs)};`
+      );
+    } else if (transform.transform.type === "combineCoord") {
+      generator = (c, uv) => `${generateInputs2(inputs, shaderParams)(`${c}${i}`, uv)}
+         ${uv} = ${shaderString2(`${c}${i}`, `${uv}`, transform.name, inputs)};
+         ${prev(c, uv)}`;
+    }
+  });
+  return generator;
+}
+function generateInputs2(inputs, shaderParams) {
+  let generator = (c, uv) => "";
+  var prev = generator;
+  inputs.forEach((input, i) => {
+    if (input.value && input.value.transforms) {
+      prev = generator;
+      generator = (c, uv) => {
+        let ci = generateInputName2(c, i);
+        let uvi = generateInputName2(`${uv}_${c}`, i);
+        return `var ${uvi}: vec2<f32> = ${uv};${prev(c, uv)}
+         ${generateWgsl(input.value.transforms, shaderParams)(ci, uvi)}`;
+      };
+    }
+  });
+  return generator;
+}
+function shaderString2(c, uv, method, inputs) {
+  const str = inputs.map((input, i) => {
+    if (input.isUniform) {
+      return input.name;
+    } else if (input.value && input.value.transforms) {
+      return generateInputName2(c, i);
+    }
+    if (input.value === void 0 || input.value === null) {
+      if (input.default !== void 0) {
+        const val = String(input.default);
+        return input.type === "float" && !val.includes(".") ? val + "." : val;
+      }
+      return input.type === "float" ? "0.0" : "0";
+    }
+    return input.value;
+  }).reduce((p, c2) => `${p}, ${c2}`, "");
+  return `${method}(${uv}${str})`;
+}
+function contains2(object, arr) {
+  for (var i = 0; i < arr.length; i++) {
+    if (object.name == arr[i].name) return true;
+  }
+  return false;
+}
+
 // src/engines/WGSLEngine.js
 var WGSLEngine = class extends IRenderEngine_default {
   constructor(options = {}) {
@@ -13346,18 +13483,27 @@ var WGSLEngine = class extends IRenderEngine_default {
     this.uniformBuffer = null;
     this.positionBuffer = null;
     this.initialized = false;
+    this._activeFramebuffers = /* @__PURE__ */ new Set();
+    this._activeTextures = /* @__PURE__ */ new Set();
   }
   // ============================================================
   // Lifecycle Methods
   // ============================================================
-  async init() {
+  init() {
     if (!navigator.gpu) {
-      throw new Error("WebGPU is not supported in this browser");
+      console.error("[WGSLEngine] WebGPU is not supported in this browser");
+      this._initError = new Error("WebGPU is not supported in this browser");
+      return this;
     }
+    this._initPromise = this._asyncInit().catch((err) => {
+      console.error("[WGSLEngine] Initialization failed:", err);
+      this._initError = err;
+    });
+    return this;
+  }
+  async _asyncInit() {
     const adapter = await navigator.gpu.requestAdapter();
-    if (!adapter) {
-      throw new Error("Failed to get WebGPU adapter");
-    }
+    if (!adapter) throw new Error("Failed to get WebGPU adapter");
     this.device = await adapter.requestDevice();
     this.context = this.canvas.getContext("webgpu");
     this.format = navigator.gpu.getPreferredCanvasFormat();
@@ -13366,20 +13512,7 @@ var WGSLEngine = class extends IRenderEngine_default {
       format: this.format,
       alphaMode: "premultiplied"
     });
-    const positions = new Float32Array([
-      -1,
-      -1,
-      1,
-      -1,
-      -1,
-      1,
-      -1,
-      1,
-      1,
-      -1,
-      1,
-      1
-    ]);
+    const positions = new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]);
     this.positionBuffer = this.device.createBuffer({
       size: positions.byteLength,
       usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
@@ -13390,43 +13523,88 @@ var WGSLEngine = class extends IRenderEngine_default {
       // time(4) + resolution(8) + padding
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
     });
+    this._initPendingResources();
     this.initialized = true;
+    console.log("[WGSLEngine] WebGPU initialized successfully");
     this.clear({ color: [0, 0, 0, 1] });
     return this;
   }
+  _initPendingResources() {
+    this._activeFramebuffers.forEach(({ fbo, options }) => {
+      if (fbo.texture) fbo.texture.destroy();
+      const { width, height } = options;
+      const texture = this.device.createTexture({
+        size: [width, height, 1],
+        format: this.format,
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST
+      });
+      fbo.texture = texture;
+      fbo.view = texture.createView();
+    });
+    this._activeTextures.forEach(({ texWrapper, options }) => {
+      if (texWrapper._texture) texWrapper._texture.destroy();
+      const { width, height, shape, data } = options;
+      const texWidth = width || shape && shape[0] || 1;
+      const texHeight = height || shape && shape[1] || 1;
+      const texture = this.device.createTexture({
+        size: [texWidth, texHeight, 1],
+        format: "rgba8unorm",
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
+      });
+      const sampler = this.device.createSampler({
+        magFilter: "nearest",
+        minFilter: "nearest"
+      });
+      texWrapper._texture = texture;
+      texWrapper.view = texture.createView();
+      texWrapper.sampler = sampler;
+      if (data && (data instanceof HTMLVideoElement || data instanceof HTMLImageElement || data instanceof HTMLCanvasElement)) {
+        createImageBitmap(data).then((imageBitmap) => {
+          this.device.queue.copyExternalImageToTexture(
+            { source: imageBitmap },
+            { texture },
+            [imageBitmap.width, imageBitmap.height]
+          );
+        });
+      }
+    });
+  }
   destroy() {
+    this.initialized = false;
     if (this.device) {
       this.pipelines.clear();
       this.bindGroupLayouts.clear();
-      this.textures.forEach((tex) => tex.destroy());
-      this.buffers.forEach((buf) => buf.destroy());
-      this.textures.clear();
-      this.buffers.clear();
+      this._activeFramebuffers.forEach(({ fbo }) => {
+        if (fbo.texture) fbo.texture.destroy();
+        fbo.texture = null;
+        fbo.view = null;
+      });
+      this._activeTextures.forEach(({ texWrapper }) => {
+        if (texWrapper._texture) texWrapper._texture.destroy();
+        texWrapper._texture = null;
+        texWrapper.view = null;
+      });
       if (this.positionBuffer) this.positionBuffer.destroy();
       if (this.uniformBuffer) this.uniformBuffer.destroy();
       this.device = null;
       this.context = null;
+      this.uniformBuffer = null;
+      this.positionBuffer = null;
     }
   }
   refresh() {
   }
-  // ============================================================
-  // Resource Creation Methods
-  // ============================================================
   createFramebuffer(options) {
-    const { width, height } = options;
-    const texture = this.device.createTexture({
-      size: [width, height, 1],
-      format: this.format,
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST
-    });
     const fbo = {
-      texture,
-      view: texture.createView(),
-      width,
-      height,
+      texture: null,
+      view: null,
+      width: options.width,
+      height: options.height,
       resize: (newWidth, newHeight) => {
-        texture.destroy();
+        options.width = newWidth;
+        options.height = newHeight;
+        if (!this.device) return;
+        if (fbo.texture) fbo.texture.destroy();
         const newTexture = this.device.createTexture({
           size: [newWidth, newHeight, 1],
           format: this.format,
@@ -13436,31 +13614,40 @@ var WGSLEngine = class extends IRenderEngine_default {
         fbo.view = newTexture.createView();
         fbo.width = newWidth;
         fbo.height = newHeight;
+      },
+      destroy: () => {
+        if (fbo.texture) fbo.texture.destroy();
+        this._activeFramebuffers.delete(entry);
       }
     };
+    const entry = { fbo, options };
+    this._activeFramebuffers.add(entry);
+    if (this.device) {
+      const { width, height } = options;
+      const texture = this.device.createTexture({
+        size: [width, height, 1],
+        format: this.format,
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST
+      });
+      fbo.texture = texture;
+      fbo.view = texture.createView();
+    }
     return fbo;
   }
   createTexture(options) {
-    const { width, height, shape, data } = options;
-    const texWidth = width || shape && shape[0] || 1;
-    const texHeight = height || shape && shape[1] || 1;
-    const texture = this.device.createTexture({
-      size: [texWidth, texHeight, 1],
-      format: "rgba8unorm",
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
-    });
-    const sampler = this.device.createSampler({
-      magFilter: "nearest",
-      minFilter: "nearest"
-    });
     const texWrapper = {
-      _texture: texture,
-      view: texture.createView(),
-      sampler,
-      width: texWidth,
-      height: texHeight,
+      _texture: null,
+      view: null,
+      sampler: null,
+      width: options.width || options.shape && options.shape[0] || 1,
+      height: options.height || options.shape && options.shape[1] || 1,
       resize: (newWidth, newHeight) => {
-        texture.destroy();
+        options.width = newWidth;
+        options.height = newHeight;
+        texWrapper.width = newWidth;
+        texWrapper.height = newHeight;
+        if (!this.device) return;
+        if (texWrapper._texture) texWrapper._texture.destroy();
         const newTexture = this.device.createTexture({
           size: [newWidth, newHeight, 1],
           format: "rgba8unorm",
@@ -13468,10 +13655,9 @@ var WGSLEngine = class extends IRenderEngine_default {
         });
         texWrapper._texture = newTexture;
         texWrapper.view = newTexture.createView();
-        texWrapper.width = newWidth;
-        texWrapper.height = newHeight;
       },
       subimage: async (source) => {
+        if (!this.device) return;
         if (source instanceof HTMLVideoElement || source instanceof HTMLImageElement || source instanceof HTMLCanvasElement) {
           const imageBitmap = await createImageBitmap(source);
           this.device.queue.copyExternalImageToTexture(
@@ -13481,22 +13667,50 @@ var WGSLEngine = class extends IRenderEngine_default {
           );
         }
       },
+      destroy: () => {
+        if (texWrapper._texture) texWrapper._texture.destroy();
+        this._activeTextures.delete(entry);
+      },
       get texture() {
-        return texture;
+        return this._texture;
       }
     };
-    if (data && (data instanceof HTMLVideoElement || data instanceof HTMLImageElement || data instanceof HTMLCanvasElement)) {
-      createImageBitmap(data).then((imageBitmap) => {
-        this.device.queue.copyExternalImageToTexture(
-          { source: imageBitmap },
-          { texture },
-          [imageBitmap.width, imageBitmap.height]
-        );
+    const entry = { texWrapper, options };
+    this._activeTextures.add(entry);
+    if (this.device) {
+      const { width, height, shape, data } = options;
+      const texWidth = width || shape && shape[0] || 1;
+      const texHeight = height || shape && shape[1] || 1;
+      const texture = this.device.createTexture({
+        size: [texWidth, texHeight, 1],
+        format: "rgba8unorm",
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
       });
+      const sampler = this.device.createSampler({
+        magFilter: "nearest",
+        minFilter: "nearest"
+      });
+      texWrapper._texture = texture;
+      texWrapper.view = texture.createView();
+      texWrapper.sampler = sampler;
+      if (data && this.device) {
+        if (data instanceof HTMLVideoElement || data instanceof HTMLImageElement || data instanceof HTMLCanvasElement) {
+          createImageBitmap(data).then((imageBitmap) => {
+            this.device.queue.copyExternalImageToTexture(
+              { source: imageBitmap },
+              { texture },
+              [imageBitmap.width, imageBitmap.height]
+            );
+          });
+        }
+      }
     }
     return texWrapper;
   }
   createBuffer(data) {
+    if (!this.device) {
+      return null;
+    }
     const floatData = new Float32Array(data.flat());
     const buffer = this.device.createBuffer({
       size: floatData.byteLength,
@@ -13510,47 +13724,52 @@ var WGSLEngine = class extends IRenderEngine_default {
   // ============================================================
   createDrawCommand(options) {
     const { frag, vert, uniforms, count, framebuffer } = options;
-    const self2 = this;
-    const shaderCode = `
+    let pipeline = null;
+    let shaderModule = null;
+    return (props) => {
+      if (!this.initialized || !this.device || !this.context || !this.uniformBuffer) return;
+      if (!pipeline) {
+        try {
+          const shaderCode = `
 ${vert}
 
 ${frag}
 `;
-    let shaderModule;
-    try {
-      shaderModule = this.device.createShaderModule({
-        code: shaderCode
-      });
-    } catch (e) {
-      console.error("Shader compilation error:", e);
-      throw e;
-    }
-    const pipeline = this.device.createRenderPipeline({
-      layout: "auto",
-      vertex: {
-        module: shaderModule,
-        entryPoint: "vs_main",
-        buffers: [{
-          arrayStride: 8,
-          attributes: [{
-            format: "float32x2",
-            offset: 0,
-            shaderLocation: 0
-          }]
-        }]
-      },
-      fragment: {
-        module: shaderModule,
-        entryPoint: "fs_main",
-        targets: [{
-          format: this.format
-        }]
-      },
-      primitive: {
-        topology: "triangle-list"
+          shaderModule = this.device.createShaderModule({
+            code: shaderCode
+          });
+          pipeline = this.device.createRenderPipeline({
+            layout: "auto",
+            vertex: {
+              module: shaderModule,
+              entryPoint: "vs_main",
+              buffers: [{
+                arrayStride: 8,
+                attributes: [{
+                  format: "float32x2",
+                  offset: 0,
+                  shaderLocation: 0
+                }]
+              }]
+            },
+            fragment: {
+              module: shaderModule,
+              entryPoint: "fs_main",
+              targets: [{
+                format: this.format
+              }]
+            },
+            primitive: {
+              topology: "triangle-list"
+            }
+          });
+        } catch (e) {
+          console.error("[WGSLEngine] Shader compilation error:", e);
+          pipeline = "error";
+          return;
+        }
       }
-    });
-    return (props) => {
+      if (pipeline === "error") return;
       const uniformData = new Float32Array([
         props.time || 0,
         0,
@@ -13563,15 +13782,43 @@ ${frag}
       if (framebuffer) {
         const fbo = typeof framebuffer === "function" ? framebuffer() : framebuffer;
         targetView = fbo.view;
+        if (!targetView) {
+          return;
+        }
       } else {
-        targetView = this.context.getCurrentTexture().createView();
+        try {
+          targetView = this.context.getCurrentTexture().createView();
+        } catch (e) {
+          return;
+        }
+      }
+      const entries = [{
+        binding: 0,
+        resource: { buffer: this.uniformBuffer }
+      }];
+      if (props.tex0) {
+        let texResource = props.tex0.view;
+        if (!texResource && props.tex0.constructor && props.tex0.constructor.name === "GPUTextureView") {
+          texResource = props.tex0;
+        }
+        if (texResource) {
+          entries.push({
+            binding: 1,
+            resource: texResource
+          });
+          entries.push({
+            binding: 2,
+            resource: props.tex0.sampler || this.device.createSampler({
+              magFilter: "linear",
+              minFilter: "linear"
+            })
+          });
+        } else {
+        }
       }
       const bindGroup = this.device.createBindGroup({
         layout: pipeline.getBindGroupLayout(0),
-        entries: [{
-          binding: 0,
-          resource: { buffer: this.uniformBuffer }
-        }]
+        entries
       });
       const commandEncoder = this.device.createCommandEncoder();
       const renderPass = commandEncoder.beginRenderPass({
@@ -13584,8 +13831,10 @@ ${frag}
       });
       renderPass.setPipeline(pipeline);
       renderPass.setBindGroup(0, bindGroup);
-      renderPass.setVertexBuffer(0, this.positionBuffer);
-      renderPass.draw(6);
+      if (this.positionBuffer) {
+        renderPass.setVertexBuffer(0, this.positionBuffer);
+        renderPass.draw(6);
+      }
       renderPass.end();
       this.device.queue.submit([commandEncoder.finish()]);
     };
@@ -13617,6 +13866,9 @@ ${frag}
   getUtilityFunctions() {
     return utility_functions_default;
   }
+  generateShader(transforms) {
+    return wgsl_generator_default(transforms);
+  }
   // Helper to get shader code - uses wgsl property if available
   getShaderCode(shader) {
     if (shader.wgsl) {
@@ -13641,17 +13893,20 @@ struct Uniforms {
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 
 ${Object.values(this.getUtilityFunctions()).map((transform) => {
-      return transform.wgsl;
+      return transform.wgsl.replace(/\b(uniforms\.)?time\b/g, "uniforms.time").replace(/\b(uniforms\.)?resolution\b/g, "uniforms.resolution");
     }).join("\n")}
 
 ${shaderInfo.glslFunctions.map((transform) => {
-      return transform.transform.wgsl || "";
+      return (transform.transform.wgsl || "").replace(/\b(uniforms\.)?time\b/g, "uniforms.time").replace(/\b(uniforms\.)?resolution\b/g, "uniforms.resolution");
     }).join("\n")}
 
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     let st = uv;
-    ${shaderInfo.fragColor.replace("gl_FragColor", "return").replace("vec4", "vec4<f32>")}
+    ${shaderInfo.fragColor}
+    // Optimization guard: ensure uniforms are used
+    let _keep = uniforms.time * 0.0000001;
+    return c + vec4<f32>(_keep);
 }
 `;
     return {
@@ -13697,7 +13952,9 @@ struct Uniforms {
 
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-    return textureSample(tex0, tex0Sampler, uv);
+    // Force usage of uniforms to prevent optimization removing binding 0
+    let _dummy = uniforms.time * 0.000001;
+    return textureSample(tex0, tex0Sampler, uv) + vec4<f32>(_dummy);
 }`;
   }
   getRenderFboShader() {
@@ -13714,7 +13971,9 @@ struct Uniforms {
 
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-    return textureSample(tex0, tex0Sampler, vec2<f32>(1.0 - uv.x, uv.y));
+    // Force usage of uniforms to prevent optimization removing binding 0
+    let _dummy = uniforms.time * 0.000001;
+    return textureSample(tex0, tex0Sampler, vec2<f32>(1.0 - uv.x, uv.y)) + vec4<f32>(_dummy);
 }`;
   }
 };
@@ -13812,7 +14071,7 @@ var HydraRenderer = class {
     this.saveFrame = false;
     this.captureStream = null;
     this.generator = void 0;
-    this._initEngine();
+    this.engineReady = this._initEngine();
     this._initOutputs(numOutputs);
     this._initSources(numSources);
     this._generateGlslTransforms();
@@ -13951,7 +14210,10 @@ var HydraRenderer = class {
       height: this.height,
       precision: this.precision
     });
-    this.engine.init();
+    const initResult = this.engine.init();
+    if (initResult && initResult.then) {
+      this.engineReady = initResult;
+    }
     if (this.engine.regl) {
       this.regl = this.engine.regl;
     }

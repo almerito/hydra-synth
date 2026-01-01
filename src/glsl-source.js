@@ -51,7 +51,12 @@ GlslSource.prototype.glsl = function () {
 }
 
 GlslSource.prototype.compile = function (transforms) {
-  var shaderInfo = generateGlsl(transforms, this.synth)
+  var shaderInfo
+  if (this.engine && this.engine.generateShader) {
+    shaderInfo = this.engine.generateShader(transforms)
+  } else {
+    shaderInfo = generateGlsl(transforms, this.synth)
+  }
   var uniforms = {}
   shaderInfo.uniforms.forEach((uniform) => { uniforms[uniform.name] = uniform.value })
 

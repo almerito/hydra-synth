@@ -169,12 +169,38 @@ function processGlsl(obj) {
 `
     }
 
+    // Also wrap wgsl if present (WGSL has different syntax)
+    let wgslFunction = undefined
+    if (obj.wgsl) {
+      // Convert GLSL types to WGSL types for function signature
+      const wgslTypeMap = {
+        'vec4': 'vec4<f32>',
+        'vec3': 'vec3<f32>',
+        'vec2': 'vec2<f32>',
+        'float': 'f32',
+        'int': 'i32',
+        'sampler2D': 'texture_2d<f32>'
+      }
+      const wgslReturnType = wgslTypeMap[t.returnType] || t.returnType
+      const wgslArgs = inputs.map((input) => {
+        const wgslType = wgslTypeMap[input.type] || input.type
+        return `${input.name}: ${wgslType}`
+      }).join(', ')
+
+      wgslFunction = `
+fn ${obj.name}(${wgslArgs}) -> ${wgslReturnType} {
+    ${obj.wgsl}
+}
+`
+    }
+
     // First input gets handled specially by generator
     // IMPORTANT: Don't mutate obj directly, assign to result instead
     const processedInputs = inputs.slice(1);
 
     let result = Object.assign({}, obj, { glsl: glslFunction, inputs: processedInputs })
     if (glsl3Function) result.glsl3 = glsl3Function
+    if (wgslFunction) result.wgsl = wgslFunction
     return result
   } else {
     console.warn(`type ${obj.type} not recognized`, obj, typeLookup)

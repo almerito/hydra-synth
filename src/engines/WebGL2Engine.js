@@ -1,6 +1,7 @@
 import IRenderEngine from './IRenderEngine.js'
 import glslFunctions from '../shaders/basic-functions.js'
 import utilityFunctions from '../shaders/utility-functions.js'
+import generateGlsl from '../generate-glsl.js'
 
 // Helper to convert GLSL1 to GLSL3 (texture2D -> texture)
 function convertToGlsl3(glslCode) {
@@ -339,6 +340,10 @@ class WebGL2Engine extends IRenderEngine {
 
     getUtilityFunctions() {
         return utilityFunctions
+    }
+
+    generateShader(transforms) {
+        return generateGlsl(transforms)
     }
 
     // Helper to get shader code with GLSL3 conversion
