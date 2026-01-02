@@ -452,9 +452,96 @@ class HydraRenderer {
    * Render all outputs in a 2x2 grid
    */
   _renderAll() {
-    // TODO: Implement WebGPU version of render all
-    // For now, just render the first output
-    this._renderOutput()
+    if (!this._gpuReady) return
+
+    const width = this.canvas.width
+    const height = this.canvas.height
+    const halfWidth = Math.floor(width / 2)
+    const halfHeight = Math.floor(height / 2)
+
+    // Create command encoder for the composite pass
+    const commandEncoder = this.device.createCommandEncoder()
+
+    // Get the canvas texture view
+    const canvasTexture = this.gpuContext.getCurrentTexture()
+
+    // Clear the canvas first
+    const clearPass = commandEncoder.beginRenderPass({
+      colorAttachments: [{
+        view: canvasTexture.createView(),
+        loadOp: 'clear',
+        storeOp: 'store',
+        clearValue: { r: 0, g: 0, b: 0, a: 1 }
+      }]
+    })
+    clearPass.end()
+
+    // Submit clear
+    this.device.queue.submit([commandEncoder.finish()])
+
+    // Render each output to its quadrant
+    // Layout: o0 (top-left), o1 (top-right), o2 (bottom-left), o3 (bottom-right)
+    const quadrants = [
+      { output: this.o[0], x: 0, y: 0 },                    // o0: top-left
+      { output: this.o[1], x: halfWidth, y: 0 },            // o1: top-right
+      { output: this.o[2], x: 0, y: halfHeight },           // o2: bottom-left
+      { output: this.o[3], x: halfWidth, y: halfHeight }    // o3: bottom-right
+    ]
+
+    // Render each quadrant
+    quadrants.forEach(({ output, x, y }) => {
+      if (!output || !output.pipeline) return
+
+      // Get the texture that was rendered to in tick()
+      const textureToDisplay = output.fbos[output.pingPongIndex]
+      if (!textureToDisplay) return
+
+      // Build bind group entries
+      const bindGroupEntries = [
+        { binding: 0, resource: { buffer: output.uniformBuffer } },
+        { binding: 1, resource: output.sampler },
+        { binding: 2, resource: textureToDisplay.createView() }
+      ]
+
+      // Add dynamic texture uniform bindings
+      if (output.textureUniforms) {
+        output.textureUniforms.forEach((tex, i) => {
+          const texture = tex.value()
+          if (texture && texture.createView) {
+            bindGroupEntries.push({
+              binding: 3 + i,
+              resource: texture.createView()
+            })
+          }
+        })
+      }
+
+      const bindGroup = this.device.createBindGroup({
+        layout: output.pipeline.getBindGroupLayout(0),
+        entries: bindGroupEntries
+      })
+
+      const encoder = this.device.createCommandEncoder()
+      const renderPass = encoder.beginRenderPass({
+        colorAttachments: [{
+          view: canvasTexture.createView(),
+          loadOp: 'load',  // Load existing content (don't clear)
+          storeOp: 'store',
+        }]
+      })
+
+      // Set viewport for this quadrant
+      renderPass.setViewport(x, y, halfWidth, halfHeight, 0, 1)
+      renderPass.setScissorRect(x, y, halfWidth, halfHeight)
+
+      renderPass.setPipeline(output.pipeline)
+      renderPass.setBindGroup(0, bindGroup)
+      renderPass.setVertexBuffer(0, output.vertexBuffer)
+      renderPass.draw(3)
+      renderPass.end()
+
+      this.device.queue.submit([encoder.finish()])
+    })
   }
 
   /**

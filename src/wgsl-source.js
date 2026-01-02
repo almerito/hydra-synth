@@ -76,6 +76,8 @@ WgslSource.prototype.compile = function (output) {
             args.push('_st: vec2<f32>');
             returnType = 'vec2<f32>';
         } else if (type === 'color') {
+            // Color functions also receive _st for texture sampling operations (dilate, sobel, erode, etc.)
+            args.push('_st: vec2<f32>');
             args.push('_c0: vec4<f32>');
             returnType = 'vec4<f32>';
         } else if (type === 'combine') {
@@ -102,9 +104,30 @@ WgslSource.prototype.compile = function (output) {
         // avoiding replacing if it's already uniforms.time or part of another word
         let processedBody = body.replace(/([^a-zA-Z0-9_.])time([^a-zA-Z0-9_])/g, '$1uniforms.time$2');
 
+        // Create mutable local copies of immutable parameters
+        // WGSL function parameters are immutable by default, so we need var copies
+        let paramCopies = '';
+        if (type === 'src' || type === 'coord' || type === 'combineCoord' || type === 'color') {
+            paramCopies += '    var _st = _st_param;\n';
+        }
+        if (type === 'color' || type === 'combine' || type === 'combineCoord') {
+            paramCopies += '    var _c0 = _c0_param;\n';
+        }
+        if (type === 'combine') {
+            paramCopies += '    var _c1 = _c1_param;\n';
+        }
+
+        // Update the argument names to use _param suffix for immutable params
+        let argsWithParam = args.map(arg => {
+            if (arg.startsWith('_st:')) return '_st_param: vec2<f32>';
+            if (arg.startsWith('_c0:')) return '_c0_param: vec4<f32>';
+            if (arg.startsWith('_c1:')) return '_c1_param: vec4<f32>';
+            return arg;
+        });
+
         return `
-fn ${name}(${args.join(', ')}) -> ${returnType} {
-${processedBody}
+fn ${name}(${argsWithParam.join(', ')}) -> ${returnType} {
+${paramCopies}${processedBody}
 }
 `;
     }).join('\n')
@@ -114,12 +137,26 @@ ${processedBody}
     c = c; // Ensure c is used
   `
 
+    // Separate texture uniforms from scalar uniforms
+    // Textures need separate WebGPU bindings (can't be in uniform struct)
+    var scalarUniforms = {}
+    var textureUniforms = []
+
+    shaderInfo.uniforms.forEach((uniform) => {
+        if (uniform.isTexture) {
+            textureUniforms.push(uniform)
+        } else {
+            scalarUniforms[uniform.name] = uniform.value
+        }
+    })
+
     return {
         wgsl: {
             header: helpers + '\n' + functions,
             body: fragmentBody
         },
-        uniforms: Object.assign({}, this.defaultUniforms, uniforms)
+        uniforms: Object.assign({}, this.defaultUniforms, scalarUniforms),
+        textureUniforms: textureUniforms
     }
 }
 

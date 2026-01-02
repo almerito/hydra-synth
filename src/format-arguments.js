@@ -136,6 +136,7 @@ export default function formatArguments(transform, startIndex, synthContext) {
             var x = typedArg.value
             typedArg.value = () => (x.getTexture())
             typedArg.isUniform = true
+            typedArg.isTexture = true  // Mark as texture for separate handling in WebGPU
           } else {
             // assume it should be treated as a source (vec4 color)
             var x1 = typedArg.value

@@ -131,7 +131,11 @@ class WebGPUOutput {
      */
     async render(pass) {
         if (!this.device) return;
-        const { wgsl, uniforms } = pass;
+        const { wgsl, uniforms = {}, textureUniforms = [] } = pass;
+
+        // Store uniforms for later use in tick()
+        this.textureUniforms = textureUniforms;
+        this.scalarUniforms = uniforms;  // Store scalar uniforms object
 
         // wgsl might be a string (old way) or object (new way)
         // support both for transition but prefer object
@@ -145,30 +149,75 @@ class WebGPUOutput {
             body = wgsl || '';
         }
 
-        // Create shader module
-        const shaderModule = this.device.createShaderModule({
-            code: this._buildFullShader(header, body),
+        // Generate texture declarations for WGSL shader
+        // Textures start at binding 3 (0=uniforms, 1=sampler, 2=prevBuffer)
+        let textureDeclarations = '';
+        textureUniforms.forEach((tex, i) => {
+            const bindingIndex = 3 + i;
+            textureDeclarations += `@group(0) @binding(${bindingIndex}) var ${tex.name}: texture_2d<f32>;\n`;
         });
 
-        // Create bind group layout
+        // Build dynamic uniform struct members
+        // Fixed members: resolution (vec2), time (f32), padding (f32)
+        // Dynamic members: all scalar uniforms from shader
+        const scalarUniformNames = Object.keys(uniforms).filter(k => k !== 'time' && k !== 'resolution');
+
+        // Calculate uniform buffer size:
+        // resolution (8 bytes) + time (4 bytes) + padding (4 bytes) = 16 bytes
+        // Each additional f32 uniform = 4 bytes
+        // Buffer size must be aligned to 16 bytes
+        const baseSize = 16;
+        const dynamicSize = scalarUniformNames.length * 4;
+        const totalSize = Math.ceil((baseSize + dynamicSize) / 16) * 16;
+
+        // Recreate uniform buffer if size changed
+        if (!this.uniformBuffer || this.uniformBufferSize !== totalSize) {
+            if (this.uniformBuffer) this.uniformBuffer.destroy();
+            this.uniformBuffer = this.device.createBuffer({
+                size: totalSize,
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            });
+            this.uniformBufferSize = totalSize;
+        }
+
+        // Store scalar uniform names for indexing in tick()
+        this.scalarUniformNames = scalarUniformNames;
+
+        // Create shader module
+        const shaderModule = this.device.createShaderModule({
+            code: this._buildFullShader(header, body, textureDeclarations, scalarUniformNames),
+        });
+
+        // Create bind group layout with dynamic texture entries
+        const bindGroupLayoutEntries = [
+            {
+                binding: 0,
+                visibility: GPUShaderStage.FRAGMENT,
+                buffer: { type: 'uniform' }
+            },
+            {
+                binding: 1,
+                visibility: GPUShaderStage.FRAGMENT,
+                sampler: { type: 'filtering' }
+            },
+            {
+                binding: 2,
+                visibility: GPUShaderStage.FRAGMENT,
+                texture: { sampleType: 'float' }
+            }
+        ];
+
+        // Add entries for each texture uniform
+        textureUniforms.forEach((tex, i) => {
+            bindGroupLayoutEntries.push({
+                binding: 3 + i,
+                visibility: GPUShaderStage.FRAGMENT,
+                texture: { sampleType: 'float' }
+            });
+        });
+
         const bindGroupLayout = this.device.createBindGroupLayout({
-            entries: [
-                {
-                    binding: 0,
-                    visibility: GPUShaderStage.FRAGMENT,
-                    buffer: { type: 'uniform' }
-                },
-                {
-                    binding: 1,
-                    visibility: GPUShaderStage.FRAGMENT,
-                    sampler: { type: 'filtering' }
-                },
-                {
-                    binding: 2,
-                    visibility: GPUShaderStage.FRAGMENT,
-                    texture: { sampleType: 'float' }
-                }
-            ]
+            entries: bindGroupLayoutEntries
         });
 
         // Create pipeline layout
@@ -201,28 +250,29 @@ class WebGPUOutput {
             }
         });
 
-        // Create bind group
-        this.bindGroup = this.device.createBindGroup({
-            layout: bindGroupLayout,
-            entries: [
-                { binding: 0, resource: { buffer: this.uniformBuffer } },
-                { binding: 1, resource: this.sampler },
-                { binding: 2, resource: this.getPrevBuffer().createView() }
-            ]
-        });
+        // Note: bindGroup is now created dynamically in tick() and renderToScreen()
+        // to get the current texture views
     }
 
-    _buildFullShader(header, fragmentCode) {
+    _buildFullShader(header, fragmentCode, textureDeclarations = '', scalarUniformNames = []) {
+        // Generate dynamic uniform struct members
+        const dynamicMembers = scalarUniformNames.map(name => `  ${name}: f32,`).join('\n');
+
         return `
 // Uniforms
 struct Uniforms {
   resolution: vec2<f32>,
   time: f32,
+  _padding: f32,
+${dynamicMembers}
 }
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var texSampler: sampler;
 @group(0) @binding(2) var prevBuffer: texture_2d<f32>;
+
+// Dynamic texture bindings
+${textureDeclarations}
 
 // Vertex shader
 struct VertexOutput {
@@ -263,13 +313,30 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     tick(props) {
         if (!this.pipeline) return;
 
-        // Update uniform buffer
-        const uniformData = new Float32Array([
+        // Build uniform data array: resolution (2), time (1), padding (1), then dynamic uniforms
+        const baseData = [
             props.resolution[0],
             props.resolution[1],
             props.time,
             0 // padding
-        ]);
+        ];
+
+        // Add dynamic scalar uniforms
+        if (this.scalarUniformNames && this.scalarUniforms) {
+            this.scalarUniformNames.forEach(name => {
+                const uniformValue = this.scalarUniforms[name];
+                // Uniform value can be a number or a function
+                const value = typeof uniformValue === 'function' ? uniformValue(null, props, 0) : uniformValue;
+                baseData.push(typeof value === 'number' ? value : 0);
+            });
+        }
+
+        // Pad to match buffer size
+        while (baseData.length * 4 < (this.uniformBufferSize || 16)) {
+            baseData.push(0);
+        }
+
+        const uniformData = new Float32Array(baseData);
         this.device.queue.writeBuffer(this.uniformBuffer, 0, uniformData);
 
         // Get the texture to READ from (previous frame's output)
@@ -281,15 +348,31 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         // Get the texture to WRITE to (current frame's output)
         const currentRenderTarget = this.fbos[this.pingPongIndex];
 
-        // Recreate bind group with correct prevBuffer texture
-        // This ensures we read from the previous frame's texture, not the current render target
+        // Build bind group entries
+        const bindGroupEntries = [
+            { binding: 0, resource: { buffer: this.uniformBuffer } },
+            { binding: 1, resource: this.sampler },
+            { binding: 2, resource: prevBufferTexture.createView() }
+        ];
+
+        // Add dynamic texture uniform bindings
+        if (this.textureUniforms) {
+            this.textureUniforms.forEach((tex, i) => {
+                // tex.value is a function that returns the texture
+                const texture = tex.value();
+                if (texture && texture.createView) {
+                    bindGroupEntries.push({
+                        binding: 3 + i,
+                        resource: texture.createView()
+                    });
+                }
+            });
+        }
+
+        // Recreate bind group with correct textures
         const bindGroup = this.device.createBindGroup({
             layout: this.pipeline.getBindGroupLayout(0),
-            entries: [
-                { binding: 0, resource: { buffer: this.uniformBuffer } },
-                { binding: 1, resource: this.sampler },
-                { binding: 2, resource: prevBufferTexture.createView() }
-            ]
+            entries: bindGroupEntries
         });
 
         // Create command encoder
@@ -326,14 +409,30 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         // We want to read from that texture and display it on screen
         const textureToDisplay = this.fbos[this.pingPongIndex];
 
-        // Create bind group with the correct texture
+        // Build bind group entries
+        const bindGroupEntries = [
+            { binding: 0, resource: { buffer: this.uniformBuffer } },
+            { binding: 1, resource: this.sampler },
+            { binding: 2, resource: textureToDisplay.createView() }
+        ];
+
+        // Add dynamic texture uniform bindings
+        if (this.textureUniforms) {
+            this.textureUniforms.forEach((tex, i) => {
+                const texture = tex.value();
+                if (texture && texture.createView) {
+                    bindGroupEntries.push({
+                        binding: 3 + i,
+                        resource: texture.createView()
+                    });
+                }
+            });
+        }
+
+        // Create bind group with correct textures
         const bindGroup = this.device.createBindGroup({
             layout: this.pipeline.getBindGroupLayout(0),
-            entries: [
-                { binding: 0, resource: { buffer: this.uniformBuffer } },
-                { binding: 1, resource: this.sampler },
-                { binding: 2, resource: textureToDisplay.createView() }
-            ]
+            entries: bindGroupEntries
         });
 
         const commandEncoder = this.device.createCommandEncoder();

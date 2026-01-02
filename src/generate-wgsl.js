@@ -50,10 +50,11 @@ function generateWgsl(transforms, shaderParams) {
                 `${generateInputs(inputs, shaderParams)(`${c}${i}`, uv)}
          ${c} = ${shaderString(`${c}${i}`, uv, transform.name, inputs)};`
         } else if (transform.transform.type === 'color') {
+            // Color functions receive both _st and _c0 for texture sampling operations
             generator = (c, uv) =>
                 `${generateInputs(inputs, shaderParams)(`${c}${i}`, uv)}
          ${prev(c, uv)}
-         ${c} = ${shaderString(`${c}${i}`, `${c}`, transform.name, inputs)};`
+         ${c} = ${shaderString(`${c}${i}`, `${uv}, ${c}`, transform.name, inputs)};`
         } else if (transform.transform.type === 'coord') {
             generator = (c, uv) =>
                 `${generateInputs(inputs, shaderParams)(`${c}${i}`, uv)}
@@ -162,11 +163,11 @@ function generateInputs(inputs, shaderParams) {
 function shaderString(c, uv, method, inputs) {
     const str = inputs.map((input, i) => {
         if (input.isUniform) {
-            // In WGSL uniforms are usually in a struct/block access
-            // But here we rely on the shader wrapper to define 'var<uniform> name' or similar?
-            // Actually in our webgpu-output.js we put all uniforms in a single block 'uniforms.name'
-            // But existing hydra uniform object structure (name, type, value) needs adaption.
-            // For now, let's assume global access or we prepending 'uniforms.'
+            // Texture uniforms are separate bindings, not in the uniforms struct
+            if (input.isTexture) {
+                return input.name  // Direct reference, no uniforms. prefix
+            }
+            // Scalar uniforms are in the uniforms struct
             return `uniforms.${input.name}`
         } else if (input.value && input.value.transforms) {
             return generateInputName(c, i)
