@@ -75,7 +75,8 @@ GlslSource.prototype.compile = function (transforms) {
   helpersResult.renames.forEach(({ shaderName, oldName, newName }) => {
     const transform = shaderInfo.glslFunctions.find(t => t.name === shaderName);
     if (transform && transform.transform) {
-      // Replace function calls in the shader's glsl code
+      // Replace function/variable calls in the shader's glsl code
+      // We use word boundaries to avoid replacing partial matches
       const regex = new RegExp(`\\b${oldName}\\b`, 'g');
       transform.transform.glsl = transform.transform.glsl.replace(regex, newName);
     }
@@ -130,18 +131,43 @@ GlslSource.prototype.compile = function (transforms) {
 }
 
 /**
- * Parse individual GLSL functions from a helpers string
- * Returns array of { name, signature, body, fullCode }
+ * Parse individual GLSL items (functions, defines, consts) from a helpers string
+ * Returns array of { type, name, fullCode, ...otherProps }
  */
-function parseGlslFunctions(helpersCode) {
-  const functions = [];
-  if (!helpersCode || typeof helpersCode !== 'string') return functions;
+function parseHelperItems(helpersCode) {
+  const items = [];
+  if (!helpersCode || typeof helpersCode !== 'string') return items;
 
-  // Regex to match GLSL function definitions
-  // Matches: returnType functionName(params) { body }
-  const funcRegex = /\b(void|float|int|vec2|vec3|vec4|mat2|mat3|mat4|bool|sampler2D)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(([^)]*)\)\s*\{/g;
-
+  // 1. Parse #defines
+  // Regex: start of line or space, #define, spaces, name, spaces, value (rest of line)
+  const defineRegex = /^\s*#define\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+(.*)$/gm;
   let match;
+  while ((match = defineRegex.exec(helpersCode)) !== null) {
+    items.push({
+      type: 'define',
+      name: match[1],
+      value: match[2].trim(),
+      fullCode: match[0].trim()
+    });
+  }
+
+  // 2. Parse const/global variables
+  // Regex: (optional const), type, spaces, name, spaces, =, spaces, value, ;
+  // Does not handle multi-line assignments well, keeping it simple as per plan
+  const varRegex = /\b(const\s+)?(float|int|vec2|vec3|vec4|mat2|mat3|mat4|bool)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*([^;]+);/g;
+  while ((match = varRegex.exec(helpersCode)) !== null) {
+    items.push({
+      type: 'var',
+      isConst: !!match[1],
+      dataType: match[2],
+      name: match[3],
+      value: match[4].trim(),
+      fullCode: match[0].trim()
+    });
+  }
+
+  // 3. Parse Functions (existing logic)
+  const funcRegex = /\b(void|float|int|vec2|vec3|vec4|mat2|mat3|mat4|bool|sampler2D)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(([^)]*)\)\s*\{/g;
   while ((match = funcRegex.exec(helpersCode)) !== null) {
     const returnType = match[1];
     const funcName = match[2];
@@ -149,7 +175,6 @@ function parseGlslFunctions(helpersCode) {
     const startIndex = match.index;
     const bodyStart = match.index + match[0].length;
 
-    // Find matching closing brace (handle nested braces)
     let braceCount = 1;
     let i = bodyStart;
     while (i < helpersCode.length && braceCount > 0) {
@@ -162,7 +187,8 @@ function parseGlslFunctions(helpersCode) {
     const fullCode = helpersCode.substring(startIndex, i);
     const signature = `${returnType} ${funcName}(${params})`;
 
-    functions.push({
+    items.push({
+      type: 'function',
       name: funcName,
       returnType,
       params,
@@ -172,7 +198,7 @@ function parseGlslFunctions(helpersCode) {
     });
   }
 
-  return functions;
+  return items;
 }
 
 /**
@@ -180,11 +206,11 @@ function parseGlslFunctions(helpersCode) {
  * Returns { helpers: string, renames: [{ shaderName, oldName, newName }] }
  */
 function processHelpers(glslFunctions) {
-  // Map: functionName -> { signature, body, fullCode }
-  const registeredFunctions = new Map();
-  // Track all registered names (including renamed ones) to ensure uniqueness
+  // Map: name -> { type, fullCode, ... }
+  const registeredItems = new Map();
+  // Track all registered names
   const allNames = new Set();
-  // Track renames needed: { shaderName, oldName, newName }
+  // Track renames needed
   const renames = [];
   // Final helper code parts
   const helperParts = [];
@@ -193,54 +219,73 @@ function processHelpers(glslFunctions) {
     if (!transform.transform.helpers) return;
 
     const shaderName = transform.name;
-    const parsedFunctions = parseGlslFunctions(transform.transform.helpers);
+    const parsedItems = parseHelperItems(transform.transform.helpers);
 
-    parsedFunctions.forEach((func) => {
-      const existing = registeredFunctions.get(func.name);
+    parsedItems.forEach((item) => {
+      const existing = registeredItems.get(item.name);
 
       if (!existing) {
-        // New function, register it
-        registeredFunctions.set(func.name, {
-          signature: func.signature,
-          body: func.body,
-          fullCode: func.fullCode
-        });
-        allNames.add(func.name);
-        helperParts.push(func.fullCode);
+        // New item, register it
+        registeredItems.set(item.name, item);
+        allNames.add(item.name);
+        helperParts.push(item.fullCode);
       } else {
-        // Function with same name exists - check if identical
-        if (existing.signature === func.signature && existing.body === func.body) {
-          // Identical function, skip (shader will use the existing one)
+        // Item with same name exists - check if identical
+        let isIdentical = false;
+
+        if (existing.type === item.type) {
+          if (item.type === 'define') {
+            isIdentical = (existing.value === item.value);
+          } else if (item.type === 'var') {
+            isIdentical = (existing.value === item.value && existing.dataType === item.dataType);
+          } else if (item.type === 'function') {
+            isIdentical = (existing.signature === item.signature && existing.body === item.body);
+          }
+        }
+
+        if (isIdentical) {
+          // Identical, skip
           return;
         } else {
-          // Different function with same name - need to rename
-          let newName = `${shaderName}_${func.name}`;
-
-          // Ensure the new name is unique
+          // Conflict - rename
+          let newName = `${shaderName}_${item.name}`;
           let counter = 1;
           while (allNames.has(newName)) {
-            newName = `${shaderName}_${func.name}_${counter}`;
+            newName = `${shaderName}_${item.name}_${counter}`;
             counter++;
           }
 
-          // Register the renamed function
-          const renamedFullCode = func.fullCode.replace(
-            new RegExp(`\\b${func.name}\\b`),
-            newName
-          );
+          let renamedFullCode = item.fullCode;
 
-          registeredFunctions.set(newName, {
-            signature: func.signature.replace(func.name, newName),
-            body: func.body,
-            fullCode: renamedFullCode
-          });
+          if (item.type === 'define') {
+            // #define NAME VALUE -> #define NEWNAME VALUE
+            // We only replace the NAME part
+            renamedFullCode = item.fullCode.replace(
+              new RegExp(`(#define\\s+)${item.name}(\\s+)`),
+              `$1${newName}$2`
+            );
+          } else if (item.type === 'var') {
+            // type NAME = value -> type NEWNAME = value
+            // We replace "type NAME" with "type NEWNAME" to be safe
+            // actually safe to just replace word boundary name before '='
+            renamedFullCode = item.fullCode.replace(
+              new RegExp(`\\b${item.name}\\b(\\s*=)`),
+              `${newName}$1`
+            );
+          } else if (item.type === 'function') {
+            renamedFullCode = item.fullCode.replace(
+              new RegExp(`\\b${item.name}\\b`),
+              newName
+            );
+          }
+
+          registeredItems.set(newName, Object.assign({}, item, { name: newName, fullCode: renamedFullCode }));
           allNames.add(newName);
           helperParts.push(renamedFullCode);
 
-          // Track the rename so we can update shader code
           renames.push({
             shaderName,
-            oldName: func.name,
+            oldName: item.name,
             newName
           });
         }

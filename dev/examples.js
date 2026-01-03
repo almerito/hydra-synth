@@ -5,7 +5,8 @@ export {
   exampleVideo,
   exampleResize,
   nonGlobalCanvas,
-  exampleHelpers
+  exampleHelpers,
+  exampleHelpersConstants
 };
 
 function exampleResize() {
@@ -337,4 +338,52 @@ function exampleHelpers() {
   // Blend both shaders - this will trigger the helper processing
   // coolShader uses original noise3d, otherShader uses otherShader_noise3d
   coolShader().blend(otherShader(), 0.5).out();
+}
+
+// Example verifying constants and defines in helpers
+function exampleHelpersConstants() {
+  // Shader 1: Defines PI and SCALE (1.0)
+  setFunction({
+    name: 'circle1',
+    type: 'src',
+    inputs: [],
+    helpers: `
+      #define PI 3.14159
+      #define SCALE 1.0
+      const float INTENSITY = 0.5;
+      
+      float getCircle(vec2 st, float s) {
+        return smoothstep(s, s-0.01, length(st));
+      }
+    `,
+    glsl: `
+      vec2 st = _st - 0.5;
+      return vec4(vec3(getCircle(st, SCALE * 0.3) * INTENSITY), 1.0);
+    `
+  });
+
+  // Shader 2: Defines PI (Identical), SCALE (2.0 - Conflict), INTENSITY (1.0 - Conflict)
+  setFunction({
+    name: 'circle2',
+    type: 'src',
+    inputs: [],
+    helpers: `
+      #define PI 3.14159
+      #define SCALE 0.5
+      const float INTENSITY = 1.0;
+      
+      float getCircle(vec2 st, float s) {
+        return smoothstep(s, s-0.01, length(st));
+      }
+    `,
+    glsl: `
+      vec2 st = _st - 0.5;
+      // Should use renamed SCALE (e.g. circle2_SCALE) and INTENSITY
+      return vec4(vec3(getCircle(st, SCALE * 0.3) * INTENSITY), 1.0);
+    `
+  });
+
+  // circle1 should be smaller and dimmer
+  // circle2 should be larger and brighter
+  circle1().add(circle2().scrollX(0.5)).out();
 }
