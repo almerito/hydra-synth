@@ -1,5 +1,34 @@
 # Changelog
 
+## [2.1.0] - 2026-01-03
+### Added
+- **`helpers` parameter for `setFunction`** - Define nested GLSL helper functions that are automatically included in the shader
+  - Helper functions are added before the main shader function in the generated code
+  - Automatic GLSL 1.0 to 3.0 conversion for helpers (same as `glsl` parameter)
+  - Deduplication: identical helpers used by multiple shaders are included only once
+
+  Example usage:
+  ```javascript
+  setFunction({
+    name: 'coolShader',
+    type: 'src',
+    helpers: `
+      float noise3d(vec3 p) { 
+        return fract(sin(dot(p, vec3(12.9898, 78.233, 45.164))) * 43758.5453); 
+      }
+      vec2 rotate(vec2 p, float a) { 
+        float c = cos(a), s = sin(a);
+        return vec2(p.x*c - p.y*s, p.x*s + p.y*c);
+      }
+    `,
+    glsl: `
+      vec2 st = rotate(_st - 0.5, time) + 0.5;
+      float n = noise3d(vec3(st * 10.0, time));
+      return vec4(vec3(n), 1.0);
+    `
+  });
+  ```
+
 ## [2.0.0] - 2026-01-01
 ### Added
 - **GLSL 3.0 ES (WebGL 2.0) support** - Hydra now uses GLSL 3.0 ES as default for improved shader compatibility

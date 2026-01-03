@@ -154,6 +154,17 @@ function processGlsl(obj) {
       shaderCode = convertGlsl1ToGlsl3(shaderCode);
     }
 
+    // Process helpers (nested shader functions)
+    // helpers can be a string with GLSL function definitions
+    let processedHelpers = '';
+    if (obj.helpers) {
+      processedHelpers = obj.helpers;
+      // Auto-convert helpers from GLSL 1.0 to GLSL 3.0 if needed
+      if (needsConversion(processedHelpers)) {
+        processedHelpers = convertGlsl1ToGlsl3(processedHelpers);
+      }
+    }
+
     let glslFunction =
       `
   ${t.returnType} ${obj.name}(${args}) {
@@ -163,7 +174,7 @@ function processGlsl(obj) {
     // First input gets handled specially by generator
     obj.inputs = inputs.slice(1);
 
-    return Object.assign({}, obj, { glsl: glslFunction })
+    return Object.assign({}, obj, { glsl: glslFunction, helpers: processedHelpers })
   } else {
     console.warn(`type ${obj.type} not recognized`, obj, typeLookup)
   }

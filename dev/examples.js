@@ -4,7 +4,8 @@ export {
   fugitiveGeometry,
   exampleVideo,
   exampleResize,
-  nonGlobalCanvas
+  nonGlobalCanvas,
+  exampleHelpers
 };
 
 function exampleResize() {
@@ -281,4 +282,33 @@ function exampleSmoothing() {
 
 function exampleSetResolution() {
   setResolution(20, 20)
+}
+
+// Example demonstrating the new helpers feature for nested shader functions
+function exampleHelpers() {
+  setFunction({
+    name: 'coolShader',
+    type: 'src',
+    inputs: [],
+
+    // Helper functions - these will be added before the main shader function
+    helpers: `
+      float noise3d(vec3 p) { 
+        return fract(sin(dot(p, vec3(12.9898, 78.233, 45.164))) * 43758.5453); 
+      }
+      
+      vec2 rotate(vec2 p, float a) { 
+        float c = cos(a), s = sin(a);
+        return vec2(p.x*c - p.y*s, p.x*s + p.y*c);
+      }
+    `,
+
+    glsl: `
+      vec2 st = rotate(_st - 0.5, time) + 0.5;
+      float n = noise3d(vec3(st * 10.0, time));
+      return vec4(vec3(n), 1.0);
+    `
+  });
+
+  coolShader().out();
 }

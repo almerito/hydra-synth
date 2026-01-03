@@ -93,11 +93,22 @@ GlslSource.prototype.compile = function (transforms) {
           `
   }).join('')}
 
+  ${(() => {
+      // Collect unique helpers from all transforms
+      const helpersSet = new Set();
+      shaderInfo.glslFunctions.forEach((transform) => {
+        if (transform.transform.helpers) {
+          helpersSet.add(transform.transform.helpers);
+        }
+      });
+      return Array.from(helpersSet).join('\n');
+    })()}
+
   ${shaderInfo.glslFunctions.map((transform) => {
-    return `
+      return `
             ${transform.transform.glsl}
           `
-  }).join('')}
+    }).join('')}
 
   void main () {
     vec2 st = gl_FragCoord.xy/resolution.xy;

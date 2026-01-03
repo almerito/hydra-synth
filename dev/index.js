@@ -1,5 +1,5 @@
 import Hydra from '../src/hydra-synth.js';
-import { fugitiveGeometry, exampleVideo, exampleResize, nonGlobalCanvas } from './examples.js';
+import { fugitiveGeometry, exampleVideo, exampleResize, nonGlobalCanvas, exampleHelpers } from './examples.js';
 
 function init() {
     window.hydra = new Hydra({ detectAudio: false, makeGlobal: true });
@@ -8,6 +8,7 @@ function init() {
     osc().out();
 
     // Uncomment to test other examples:
+    // exampleHelpers();  // Test the new helpers feature
     // exampleVideo();
     // exampleResize();
     // nonGlobalCanvas();
