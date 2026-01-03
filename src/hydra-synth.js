@@ -99,8 +99,9 @@ class HydraRenderer {
 
     this.generator = undefined
 
+    this.numOutputs = Math.max(1, numOutputs)
     this._initRegl()
-    this._initOutputs(numOutputs)
+    this._initOutputs(this.numOutputs)
     this._initSources(numSources)
     this._generateGlslTransforms()
 
@@ -283,34 +284,43 @@ class HydraRenderer {
       color: [0, 0, 0, 1]
     })
 
+    const cols = Math.ceil(Math.sqrt(this.numOutputs))
+    const rows = Math.ceil(this.numOutputs / cols)
+
+    // Dynamic prop generation for textures
+    const texUniforms = {}
+    for (let i = 0; i < this.numOutputs; i++) {
+      texUniforms[`tex[${i}]`] = this.regl.prop(`tex${i}`)
+    }
+
+    // Generate shader branch for texture selection because dynamic indexing is not universally supported
+    let textureSelection = '';
+    for (let i = 0; i < this.numOutputs; i++) {
+      const branch = `if(index==${i}){ fragColor = texture(tex[${i}], st); }`;
+      if (i === 0) textureSelection += branch;
+      else textureSelection += ' else ' + branch;
+    }
+    textureSelection += ` else { fragColor = vec4(0.0); }`;
+
     this.renderAll = this.regl({
       frag: `#version 300 es
       precision ${this.precision} float;
       in vec2 uv;
       out vec4 fragColor;
-      uniform sampler2D tex0;
-      uniform sampler2D tex1;
-      uniform sampler2D tex2;
-      uniform sampler2D tex3;
+      uniform sampler2D tex[${this.numOutputs}];
 
       void main () {
         vec2 st = vec2(1.0 - uv.x, uv.y);
-        st*= vec2(2);
-        vec2 q = floor(st).xy*(vec2(2.0, 1.0));
-        int quad = int(q.x) + int(q.y);
-        st.x += step(1., mod(st.y,2.0));
-        st.y += step(1., mod(st.x,2.0));
+        st *= vec2(${cols}.0, ${rows}.0);
+        vec2 gridPos = floor(st);
+        
+        // Column-major indexing (y + x * rows) to preserve visual layout of previous 2x2 grid (0=TL, 1=BL, 2=TR, 3=BR)
+        // Note: 'rows' is the height of the column in cells (which is effectively 'rows')
+        int index = int(gridPos.y) + int(gridPos.x) * ${rows};
+        
         st = fract(st);
-        if(quad==0){
-          fragColor = texture(tex0, st);
-        } else if(quad==1){
-          fragColor = texture(tex1, st);
-        } else if (quad==2){
-          fragColor = texture(tex2, st);
-        } else {
-          fragColor = texture(tex3, st);
-        }
-
+        
+        ${textureSelection}
       }
       `,
       vert: `#version 300 es
@@ -329,12 +339,7 @@ class HydraRenderer {
           [2, 2]
         ]
       },
-      uniforms: {
-        tex0: this.regl.prop('tex0'),
-        tex1: this.regl.prop('tex1'),
-        tex2: this.regl.prop('tex2'),
-        tex3: this.regl.prop('tex3')
-      },
+      uniforms: texUniforms,
       count: 3,
       depth: { enable: false }
     })
@@ -468,13 +473,13 @@ class HydraRenderer {
           })
         }
         if (this.isRenderingAll) {
-          this.renderAll({
-            tex0: this.o[0].getCurrent(),
-            tex1: this.o[1].getCurrent(),
-            tex2: this.o[2].getCurrent(),
-            tex3: this.o[3].getCurrent(),
+          const props = {
             resolution: [this.canvas.width, this.canvas.height]
-          })
+          }
+          for (let i = 0; i < this.o.length; i++) {
+            props[`tex${i}`] = this.o[i].getCurrent()
+          }
+          this.renderAll(props)
         } else {
 
           this.renderFbo({
