@@ -10,6 +10,10 @@
     - If two shaders define a helper with the same name but different implementation, the second one is automatically renamed (e.g., `noise3d` → `shaderName_noise3d`)
     - References in the shader's `glsl` code are automatically updated to use the renamed function
     - Ensures unique names even with multiple conflicts (adds counter suffix if needed)
+- **Dynamic Output Support** - Removed the hardcoded limit of 4 outputs.
+  - You can now initialize Hydra with any number of outputs: `new Hydra({ numOutputs: 16 })`.
+  - The render grid automatically adapts to the number of outputs.
+  - Preserved legacy visual layout (column-major rendering) for 4 outputs.
 
   Example usage:
   ```javascript
