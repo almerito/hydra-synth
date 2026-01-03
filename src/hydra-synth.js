@@ -284,45 +284,63 @@ class HydraRenderer {
       color: [0, 0, 0, 1]
     })
 
-    const cols = Math.ceil(Math.sqrt(this.numOutputs))
-    const rows = Math.ceil(this.numOutputs / cols)
-
     // Dynamic prop generation for textures
     const texUniforms = {}
     for (let i = 0; i < this.numOutputs; i++) {
       texUniforms[`tex[${i}]`] = this.regl.prop(`tex${i}`)
     }
 
-    // Generate shader branch for texture selection because dynamic indexing is not universally supported
-    let textureSelection = '';
-    for (let i = 0; i < this.numOutputs; i++) {
-      const branch = `if(index==${i}){ fragColor = texture(tex[${i}], st); }`;
-      if (i === 0) textureSelection += branch;
-      else textureSelection += ' else ' + branch;
+    let fragShader;
+    if (this.numOutputs === 1) {
+      // Optimized shader for single output - skip grid logic entirely
+      fragShader = `#version 300 es
+        precision ${this.precision} float;
+        in vec2 uv;
+        out vec4 fragColor;
+        uniform sampler2D tex[1]; // Array of size 1
+
+        void main () {
+          // Simple full-screen render (flipped Y for texture coords as usual)
+          fragColor = texture(tex[0], vec2(1.0 - uv.x, uv.y));
+        }
+        `;
+    } else {
+      // Grid shader for multiple outputs
+      const cols = Math.ceil(Math.sqrt(this.numOutputs))
+      const rows = Math.ceil(this.numOutputs / cols)
+
+      // Generate shader branch for texture selection because dynamic indexing is not universally supported
+      let textureSelection = '';
+      for (let i = 0; i < this.numOutputs; i++) {
+        const branch = `if(index==${i}){ fragColor = texture(tex[${i}], st); }`;
+        if (i === 0) textureSelection += branch;
+        else textureSelection += ' else ' + branch;
+      }
+      textureSelection += ` else { fragColor = vec4(0.0); }`;
+
+      fragShader = `#version 300 es
+        precision ${this.precision} float;
+        in vec2 uv;
+        out vec4 fragColor;
+        uniform sampler2D tex[${this.numOutputs}];
+
+        void main () {
+          vec2 st = vec2(1.0 - uv.x, uv.y);
+          st *= vec2(${cols}.0, ${rows}.0);
+          vec2 gridPos = floor(st);
+          
+          // Column-major indexing (y + x * rows) to preserve visual layout of previous 2x2 grid (0=TL, 1=BL, 2=TR, 3=BR)
+          int index = int(gridPos.y) + int(gridPos.x) * ${rows};
+          
+          st = fract(st);
+          
+          ${textureSelection}
+        }
+        `;
     }
-    textureSelection += ` else { fragColor = vec4(0.0); }`;
 
     this.renderAll = this.regl({
-      frag: `#version 300 es
-      precision ${this.precision} float;
-      in vec2 uv;
-      out vec4 fragColor;
-      uniform sampler2D tex[${this.numOutputs}];
-
-      void main () {
-        vec2 st = vec2(1.0 - uv.x, uv.y);
-        st *= vec2(${cols}.0, ${rows}.0);
-        vec2 gridPos = floor(st);
-        
-        // Column-major indexing (y + x * rows) to preserve visual layout of previous 2x2 grid (0=TL, 1=BL, 2=TR, 3=BR)
-        // Note: 'rows' is the height of the column in cells (which is effectively 'rows')
-        int index = int(gridPos.y) + int(gridPos.x) * ${rows};
-        
-        st = fract(st);
-        
-        ${textureSelection}
-      }
-      `,
+      frag: fragShader,
       vert: `#version 300 es
       precision ${this.precision} float;
       in vec2 position;
