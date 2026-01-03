@@ -138,64 +138,151 @@ function parseHelperItems(helpersCode) {
   const items = [];
   if (!helpersCode || typeof helpersCode !== 'string') return items;
 
-  // 1. Parse #defines
-  // Regex: start of line or space, #define, spaces, name, spaces, value (rest of line)
-  const defineRegex = /^\s*#define\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+(.*)$/gm;
-  let match;
-  while ((match = defineRegex.exec(helpersCode)) !== null) {
-    items.push({
-      type: 'define',
-      name: match[1],
-      value: match[2].trim(),
-      fullCode: match[0].trim()
-    });
-  }
+  let depth = 0;
+  let currentToken = '';
+  let lineStart = 0;
 
-  // 2. Parse const/global variables
-  // Regex: (optional const), type, spaces, name, spaces, =, spaces, value, ;
-  // Does not handle multi-line assignments well, keeping it simple as per plan
-  const varRegex = /\b(const\s+)?(float|int|vec2|vec3|vec4|mat2|mat3|mat4|bool)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*([^;]+);/g;
-  while ((match = varRegex.exec(helpersCode)) !== null) {
-    items.push({
-      type: 'var',
-      isConst: !!match[1],
-      dataType: match[2],
-      name: match[3],
-      value: match[4].trim(),
-      fullCode: match[0].trim()
-    });
-  }
+  // Simple state machine to parse top-level items
+  // We identify: 
+  // 1. #define (always single line)
+  // 2. const/var declarations (terminated by ;)
+  // 3. functions (terminated by })
 
-  // 3. Parse Functions (existing logic)
-  const funcRegex = /\b(void|float|int|vec2|vec3|vec4|mat2|mat3|mat4|bool|sampler2D)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(([^)]*)\)\s*\{/g;
-  while ((match = funcRegex.exec(helpersCode)) !== null) {
-    const returnType = match[1];
-    const funcName = match[2];
-    const params = match[3];
-    const startIndex = match.index;
-    const bodyStart = match.index + match[0].length;
+  // Regexes for identifying pattern starts at top level
+  // Function start: type name(params) {
+  const funcStartRegex = /^\s*(void|float|int|vec2|vec3|vec4|mat2|mat3|mat4|bool|sampler2D)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(([^)]*)\)\s*\{/;
+  // Var start: (const) type name = value;
+  const varStartRegex = /^\s*(const\s+)?(float|int|vec2|vec3|vec4|mat2|mat3|mat4|bool)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=/;
+  // Define start: #define
+  const defineRegex = /^\s*#define\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+(.*)$/;
 
-    let braceCount = 1;
-    let i = bodyStart;
-    while (i < helpersCode.length && braceCount > 0) {
-      if (helpersCode[i] === '{') braceCount++;
-      else if (helpersCode[i] === '}') braceCount--;
-      i++;
+  // Split by lines for easier #define and var scanning, 
+  // but we need to handle multi-line functions carefully.
+  // Actually, let's scan the string manually to handle brace nesting correctly.
+
+  const len = helpersCode.length;
+  let i = 0;
+
+  while (i < len) {
+    // Skip whitespace at current position
+    while (i < len && /\s/.test(helpersCode[i])) i++;
+    if (i >= len) break;
+
+    // Check for comments
+    if (helpersCode.startsWith('//', i)) {
+      // Skip single line comment
+      let newline = helpersCode.indexOf('\n', i);
+      if (newline === -1) break;
+      i = newline + 1;
+      continue;
+    }
+    if (helpersCode.startsWith('/*', i)) {
+      // Skip block comment
+      let close = helpersCode.indexOf('*/', i);
+      if (close === -1) break;
+      i = close + 2;
+      continue;
     }
 
-    const body = helpersCode.substring(bodyStart, i - 1);
-    const fullCode = helpersCode.substring(startIndex, i);
-    const signature = `${returnType} ${funcName}(${params})`;
+    // Capture potential start of a statement
+    // We scan until we hit ;, {, or newline (for #define)
+    // to determine what we are looking at.
 
-    items.push({
-      type: 'function',
-      name: funcName,
-      returnType,
-      params,
-      signature,
-      body: body.trim(),
-      fullCode
-    });
+    let stmtEnd = i;
+    let foundBrace = false;
+    let foundSemi = false;
+    let foundNewline = false;
+
+    // Look ahead to classify
+    while (stmtEnd < len) {
+      const char = helpersCode[stmtEnd];
+      if (char === '{') { foundBrace = true; break; }
+      if (char === ';') { foundSemi = true; break; }
+      if (char === '\n') { foundNewline = true; if (helpersCode[i] === '#') break; } // #define ends at newline
+      stmtEnd++;
+    }
+
+    const potentialStmt = helpersCode.substring(i, stmtEnd + 1); // +1 to include delimiter
+
+    // 1. Check for #define
+    if (potentialStmt.trim().startsWith('#define')) {
+      // #define continues until newline
+      let newline = helpersCode.indexOf('\n', i);
+      if (newline === -1) newline = len;
+
+      const defineLine = helpersCode.substring(i, newline).trim();
+      const match = defineRegex.exec(defineLine);
+      if (match) {
+        items.push({
+          type: 'define',
+          name: match[1],
+          value: match[2].trim(),
+          fullCode: defineLine
+        });
+      }
+      i = newline + 1;
+      continue;
+    }
+
+    // 2. Check for Function
+    // If we hit a '{', it suggests a function definition signature before it
+    if (foundBrace) {
+      // Extract signature: text before '{'
+      const signatureText = helpersCode.substring(i, stmtEnd + 1).trim(); // includes {
+      // Regex check against the signature part
+      const match = funcStartRegex.exec(signatureText);
+
+      if (match) {
+        // It's a function! 
+        // We need to consume the body block.
+        let braceCount = 1;
+        let bodyI = stmtEnd + 1;
+        while (bodyI < len && braceCount > 0) {
+          if (helpersCode[bodyI] === '{') braceCount++;
+          else if (helpersCode[bodyI] === '}') braceCount--;
+          bodyI++;
+        }
+
+        const fullFuncCode = helpersCode.substring(i, bodyI);
+        items.push({
+          type: 'function',
+          name: match[2],
+          signature: `${match[1]} ${match[2]}(${match[3]})`,
+          body: helpersCode.substring(stmtEnd + 1, bodyI - 1).trim(),
+          fullCode: fullFuncCode
+        });
+
+        i = bodyI;
+        continue;
+      }
+    }
+
+    // 3. Check for Global Variable
+    if (foundSemi) {
+      // extract text until ;
+      const varText = helpersCode.substring(i, stmtEnd + 1).trim(); // includes ;
+      const match = varStartRegex.exec(varText);
+      if (match) {
+        // Find the full declaration including value
+        // varStartRegex matches up to '=', we need the rest
+        // We know it ends with ;
+        const valuePart = varText.substring(varText.indexOf('=') + 1, varText.length - 1).trim();
+        items.push({
+          type: 'var',
+          isConst: !!match[1],
+          dataType: match[2],
+          name: match[3],
+          value: valuePart,
+          fullCode: varText
+        });
+        i = stmtEnd + 1;
+        continue;
+      }
+    }
+
+    // If undefined pattern or parse error, skip token to avoid infinite loop
+    // But we should try to advance past current delimiter
+    i = stmtEnd + 1;
   }
 
   return items;
