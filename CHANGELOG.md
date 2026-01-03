@@ -5,7 +5,11 @@
 - **`helpers` parameter for `setFunction`** - Define nested GLSL helper functions that are automatically included in the shader
   - Helper functions are added before the main shader function in the generated code
   - Automatic GLSL 1.0 to 3.0 conversion for helpers (same as `glsl` parameter)
-  - Deduplication: identical helpers used by multiple shaders are included only once
+  - **Smart deduplication with conflict resolution**:
+    - Identical helper functions (same name, signature, and body) are included only once
+    - If two shaders define a helper with the same name but different implementation, the second one is automatically renamed (e.g., `noise3d` → `shaderName_noise3d`)
+    - References in the shader's `glsl` code are automatically updated to use the renamed function
+    - Ensures unique names even with multiple conflicts (adds counter suffix if needed)
 
   Example usage:
   ```javascript

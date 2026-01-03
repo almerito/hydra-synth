@@ -8,7 +8,7 @@ function init() {
     osc().out();
 
     // Uncomment to test other examples:
-    // exampleHelpers();  // Test the new helpers feature
+    // exampleHelpers();  // Test helpers with deduplication and conflict resolution
     // exampleVideo();
     // exampleResize();
     // nonGlobalCanvas();

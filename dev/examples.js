@@ -285,13 +285,13 @@ function exampleSetResolution() {
 }
 
 // Example demonstrating the new helpers feature for nested shader functions
+// This tests: deduplication, conflict resolution, and automatic renaming
 function exampleHelpers() {
+  // Shader 1: uses noise3d and rotate
   setFunction({
     name: 'coolShader',
     type: 'src',
     inputs: [],
-
-    // Helper functions - these will be added before the main shader function
     helpers: `
       float noise3d(vec3 p) { 
         return fract(sin(dot(p, vec3(12.9898, 78.233, 45.164))) * 43758.5453); 
@@ -302,7 +302,6 @@ function exampleHelpers() {
         return vec2(p.x*c - p.y*s, p.x*s + p.y*c);
       }
     `,
-
     glsl: `
       vec2 st = rotate(_st - 0.5, time) + 0.5;
       float n = noise3d(vec3(st * 10.0, time));
@@ -310,5 +309,32 @@ function exampleHelpers() {
     `
   });
 
-  coolShader().out();
+  // Shader 2: uses noise3d (DIFFERENT implementation!) and the same rotate
+  // - noise3d will be renamed to otherShader_noise3d
+  // - rotate is identical, so it will be reused
+  setFunction({
+    name: 'otherShader',
+    type: 'src',
+    inputs: [],
+    helpers: `
+      float noise3d(vec3 p) { 
+        // Different implementation - creates stripes instead of dots
+        return fract(sin(p.x * 100.0 + p.y * 50.0 + p.z) * 43758.5453); 
+      }
+      
+      vec2 rotate(vec2 p, float a) { 
+        float c = cos(a), s = sin(a);
+        return vec2(p.x*c - p.y*s, p.x*s + p.y*c);
+      }
+    `,
+    glsl: `
+      vec2 st = rotate(_st - 0.5, time * 0.5) + 0.5;
+      float n = noise3d(vec3(st * 5.0, time));
+      return vec4(n, n * 0.5, n * 0.2, 1.0);
+    `
+  });
+
+  // Blend both shaders - this will trigger the helper processing
+  // coolShader uses original noise3d, otherShader uses otherShader_noise3d
+  coolShader().blend(otherShader(), 0.5).out();
 }
