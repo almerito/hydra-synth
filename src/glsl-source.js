@@ -66,7 +66,40 @@ GlslSource.prototype.glsl = function () {
 GlslSource.prototype.compile = function (transforms) {
   var shaderInfo = generateGlsl(transforms, this.synth)
   var uniforms = {}
-  shaderInfo.uniforms.forEach((uniform) => { uniforms[uniform.name] = uniform.value })
+
+  // Process uniforms, expanding array uniforms into indexed properties
+  shaderInfo.uniforms.forEach((uniform) => {
+    if (uniform.isArrayUniform && uniform.arrayLength) {
+      // Array uniform - need to expand into indexed properties for regl
+      // e.g., stops0 with value [0.1, 0.2, 0.3] becomes:
+      // 'stops0[0]': 0.1, 'stops0[1]': 0.2, 'stops0[2]': 0.3
+
+      if (typeof uniform.value === 'function') {
+        // Value is a function that returns an array - create indexed accessor functions
+        const fn = uniform.value;
+        for (let i = 0; i < uniform.arrayLength; i++) {
+          const idx = i; // Capture index for closure
+          uniforms[`${uniform.name}[${idx}]`] = (context, props, batchId) => {
+            const arr = fn(context, props, batchId);
+            return Array.isArray(arr) && arr[idx] !== undefined ? arr[idx] : 0.0;
+          };
+        }
+      } else if (Array.isArray(uniform.value)) {
+        // Value is a static array - expand directly
+        const arr = uniform.value;
+        for (let i = 0; i < uniform.arrayLength; i++) {
+          uniforms[`${uniform.name}[${i}]`] = arr[i] !== undefined ? arr[i] : 0.0;
+        }
+      } else {
+        // Fallback: treat as single value, fill array with it
+        for (let i = 0; i < uniform.arrayLength; i++) {
+          uniforms[`${uniform.name}[${i}]`] = uniform.value || 0.0;
+        }
+      }
+    } else {
+      uniforms[uniform.name] = uniform.value;
+    }
+  });
 
   // Process helpers with smart deduplication and conflict resolution
   const helpersResult = processHelpers(shaderInfo.glslFunctions);
@@ -90,6 +123,11 @@ GlslSource.prototype.compile = function (transforms) {
       case 'texture':
         type = 'sampler2D'
         break
+    }
+    // Check if this is an array uniform
+    if (uniform.isArrayUniform && uniform.arrayLength) {
+      return `
+      uniform ${uniform.baseType} ${uniform.name}[${uniform.arrayLength}];`
     }
     return `
       uniform ${type} ${uniform.name};`

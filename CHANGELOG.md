@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0] - 2026-01-10
+### Added
+- **GLSL Array Uniforms** - New input types `float[]`, `int[]`, `vec2[]`, `vec3[]`, `vec4[]` allow passing JavaScript arrays as GLSL uniform arrays.
+  - Use `type: 'float[]', length: N` or `type: 'float[N]'` syntax in `setFunction`.
+  - Arrays are automatically padded (with zeros) or truncated to match the declared length.
+  - Example: `{ name: 'stops', type: 'float[]', length: 5, default: [0.0, 0.25, 0.5, 0.75, 1.0] }`
+
 ## [2.1.0] - 2026-01-03
 ### Added
 - **`helpers` parameter for `setFunction`** - Define nested GLSL helper functions that are automatically included in the shader

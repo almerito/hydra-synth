@@ -6,7 +6,8 @@ export {
   exampleResize,
   nonGlobalCanvas,
   exampleHelpers,
-  exampleHelpersConstants
+  exampleHelpersConstants,
+  exampleArrayUniforms
 };
 
 function exampleResize() {
@@ -386,4 +387,44 @@ function exampleHelpersConstants() {
   // circle1 should be smaller and dimmer
   // circle2 should be larger and brighter
   circle1().add(circle2().scrollX(0.5)).out();
+}
+
+// Test for GLSL array uniforms (float[], vec2[], etc.)
+function exampleArrayUniforms() {
+  // Example 1: Basic float array - gradient with custom stops
+  setFunction({
+    name: 'gradientStops',
+    type: 'src',
+    inputs: [
+      { name: 'stops', type: 'float[]', length: 5, default: [0.0, 0.25, 0.5, 0.75, 1.0] }
+    ],
+    glsl: `
+      // Use array values to create a stepped gradient
+      float x = _st.x;
+      float v = 0.0;
+      if (x < 0.25) v = mix(stops[0], stops[1], x * 4.0);
+      else if (x < 0.5) v = mix(stops[1], stops[2], (x - 0.25) * 4.0);
+      else if (x < 0.75) v = mix(stops[2], stops[3], (x - 0.5) * 4.0);
+      else v = mix(stops[3], stops[4], (x - 0.75) * 4.0);
+      return vec4(vec3(v), 1.0);
+    `
+  });
+
+  // Example 2: vec3 array - color palette
+  setFunction({
+    name: 'colorPalette',
+    type: 'src',
+    inputs: [
+      { name: 'colors', type: 'vec3[4]', default: [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0]] }
+    ],
+    glsl: `
+      int idx = int(_st.x * 4.0);
+      if (idx > 3) idx = 3;
+      vec3 col = colors[idx];
+      return vec4(col, 1.0);
+    `
+  });
+
+  // Test the gradientStops function with custom values
+  gradientStops([0.1, 0.3, 0.5, 0.7, 0.9]).out();
 }

@@ -139,11 +139,66 @@ const typeLookup = {
 //  return vec4(r, g, b, 1.0);
 // }`
 
+// Parse array type syntax: 'float[5]' or 'float[]' with length property
+function parseArrayType(input) {
+  const match = input.type.match(/^(\w+)\[(\d*)\]$/);
+  if (!match) return null;
+
+  const baseType = match[1];
+  // Try to get length from type string first, then from length property
+  const length = match[2] ? parseInt(match[2]) : input.length;
+
+  if (!length) {
+    console.warn(`[hydra] Array input '${input.name}' has no length specified. Use 'float[N]' or add 'length: N' property.`);
+    return null;
+  }
+
+  return { baseType, length, isArray: true };
+}
+
+// Get default value for a given GLSL type
+function getArrayDefaultValue(baseType) {
+  switch (baseType) {
+    case 'float':
+    case 'int':
+      return 0.0;
+    case 'vec2':
+      return [0.0, 0.0];
+    case 'vec3':
+      return [0.0, 0.0, 0.0];
+    case 'vec4':
+      return [0.0, 0.0, 0.0, 1.0];
+    default:
+      return 0.0;
+  }
+}
+
 function processGlsl(obj) {
   let t = typeLookup[obj.type]
   if (t) {
-    let inputs = t.args.concat(obj.inputs);
-    let args = inputs.map((input) => `${input.type} ${input.name}`).join(', ')
+    // Process inputs to detect and parse array types
+    const processedInputs = obj.inputs.map(input => {
+      const arrayInfo = parseArrayType(input);
+      if (arrayInfo) {
+        return {
+          ...input,
+          isArrayType: true,
+          baseType: arrayInfo.baseType,
+          arrayLength: arrayInfo.length
+        };
+      }
+      return input;
+    });
+
+    let inputs = t.args.concat(processedInputs);
+
+    // Generate function arguments with array syntax where needed
+    let args = inputs.map((input) => {
+      if (input.isArrayType) {
+        return `${input.baseType} ${input.name}[${input.arrayLength}]`;
+      }
+      return `${input.type} ${input.name}`;
+    }).join(', ')
 
     // Use glsl3 if available, otherwise fallback to glsl
     // If glsl contains GLSL 1.0 syntax (like texture2D), auto-convert it

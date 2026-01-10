@@ -45,8 +45,28 @@ export default function formatArguments(transform, startIndex, synthContext) {
       //  generateGlsl: null // function for creating glsl
     }
 
+    // Handle array types - copy properties from input definition
+    if (input.isArrayType) {
+      typedArg.isArrayType = true;
+      typedArg.isArrayUniform = true;
+      typedArg.arrayLength = input.arrayLength;
+      typedArg.baseType = input.baseType;
+      typedArg.isUniform = true;
+
+      // Process default value for array types
+      let arr = Array.isArray(input.default) ? [...input.default] : [];
+      while (arr.length < input.arrayLength) {
+        if (input.baseType === 'vec2') arr.push([0.0, 0.0]);
+        else if (input.baseType === 'vec3') arr.push([0.0, 0.0, 0.0]);
+        else if (input.baseType === 'vec4') arr.push([0.0, 0.0, 0.0, 1.0]);
+        else arr.push(0.0);
+      }
+      arr = arr.slice(0, input.arrayLength);
+      typedArg.value = arr;
+    }
+
     if (typedArg.type === 'float') typedArg.value = ensure_decimal_dot(input.default)
-    if (input.type.startsWith('vec')) {
+    if (input.type.startsWith('vec') && !input.isArrayType) {
       try {
         typedArg.vecLen = Number.parseInt(input.type.substr(3))
       } catch (e) {
@@ -66,38 +86,80 @@ export default function formatArguments(transform, startIndex, synthContext) {
       // do something if a composite or transform
 
       if (typeof userArgs[index] === 'function') {
-        // if (typedArg.vecLen > 0) { // expected input is a vector, not a scalar
-        //    typedArg.value = (context, props, batchId) => (fillArrayWithDefaults(userArgs[index](props), typedArg.vecLen))
-        // } else {
-        typedArg.value = (context, props, batchId) => {
-          try {
-            const val = userArgs[index](props)
-            if (typeof val === 'number') {
-              return val
-            } else {
-              console.warn('function does not return a number', userArgs[index])
+        // Check if this is an array type input with a function that returns array values
+        if (input.isArrayType) {
+          // For array types, the function should return an array
+          // We wrap it to pad/truncate the result
+          const userFunc = userArgs[index];
+          const arrayLen = input.arrayLength;
+          const baseType = input.baseType;
+
+          typedArg.value = (context, props, batchId) => {
+            try {
+              let arr = userFunc(props);
+              if (!Array.isArray(arr)) arr = [];
+
+              // Pad with default values if too short
+              while (arr.length < arrayLen) {
+                if (baseType === 'vec2') arr.push([0.0, 0.0]);
+                else if (baseType === 'vec3') arr.push([0.0, 0.0, 0.0]);
+                else if (baseType === 'vec4') arr.push([0.0, 0.0, 0.0, 1.0]);
+                else arr.push(0.0);
+              }
+              return arr.slice(0, arrayLen);
+            } catch (e) {
+              console.warn('Error in array function:', e);
+              return typedArg.value; // Return current default
             }
-            return input.default
-          } catch (e) {
-            console.warn('ERROR', e)
-            return input.default
+          };
+          // Note: isArrayUniform, arrayLength, baseType were already set during init
+        } else {
+          // Original behavior for non-array types
+          typedArg.value = (context, props, batchId) => {
+            try {
+              const val = userArgs[index](props)
+              if (typeof val === 'number') {
+                return val
+              } else {
+                console.warn('function does not return a number', userArgs[index])
+              }
+              return input.default
+            } catch (e) {
+              console.warn('ERROR', e)
+              return input.default
+            }
           }
         }
-        //  }
 
         typedArg.isUniform = true
       } else if (userArgs[index].constructor === Array) {
-        //   if (typedArg.vecLen > 0) { // expected input is a vector, not a scalar
-        //     typedArg.isUniform = true
-        //     typedArg.value = fillArrayWithDefaults(typedArg.value, typedArg.vecLen)
-        //  } else {
-        //  console.log("is Array")
-        // filter out values that are not a number
-        // const filteredArray = userArgs[index].filter((val) => typeof val === 'number')
-        // typedArg.value = (context, props, batchId) => arrayUtils.getValue(filteredArray)(props)
-        typedArg.value = (context, props, batchId) => arrayUtils.getValue(userArgs[index])(props)
-        typedArg.isUniform = true
-        // }
+        // Check if this input is an array type (uniform array) vs temporal sequence
+        if (input.isArrayType) {
+          // Handle as raw array uniform, not temporal sequence
+          let arr = [...userArgs[index]]; // Clone the array
+          const arrayLen = input.arrayLength;
+          const baseType = input.baseType;
+
+          // Pad with default values if too short
+          while (arr.length < arrayLen) {
+            if (baseType === 'vec2') arr.push([0.0, 0.0]);
+            else if (baseType === 'vec3') arr.push([0.0, 0.0, 0.0]);
+            else if (baseType === 'vec4') arr.push([0.0, 0.0, 0.0, 1.0]);
+            else arr.push(0.0); // float or int
+          }
+          // Truncate if too long
+          arr = arr.slice(0, arrayLen);
+
+          typedArg.value = arr;
+          typedArg.isUniform = true;
+          typedArg.isArrayUniform = true;
+          typedArg.arrayLength = arrayLen;
+          typedArg.baseType = baseType;
+        } else {
+          // Original behavior: treat as temporal sequence
+          typedArg.value = (context, props, batchId) => arrayUtils.getValue(userArgs[index])(props)
+          typedArg.isUniform = true
+        }
       }
     }
 
